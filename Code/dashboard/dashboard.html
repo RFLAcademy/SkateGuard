@@ -1,0 +1,1509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SkateGuard</title>
+
+<!-- "Add to Home screen" support. With these, the board's dashboard
+     installs as a standalone icon: one tap opens it full-screen, no URL
+     bar, no address to remember on that phone again. The manifest is
+     served by the board itself (see handleManifest() in the .ino); the
+     icon here is the same inline SVG so the tab/bookmark matches. -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0D0D0F">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SkateGuard">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='42' fill='%230D0D0F'/><ellipse cx='60' cy='143' rx='15' ry='11' fill='%232ECC71'/><ellipse cx='132' cy='143' rx='15' ry='11' fill='%232ECC71'/><path d='M26 104q70-24 140 0-70 27-140 0z' fill='%232ECC71'/></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='42' fill='%230D0D0F'/><ellipse cx='60' cy='143' rx='15' ry='11' fill='%232ECC71'/><ellipse cx='132' cy='143' rx='15' ry='11' fill='%232ECC71'/><path d='M26 104q70-24 140 0-70 27-140 0z' fill='%232ECC71'/></svg>">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<style>
+  /* Recreation of SkateGuardBLEApp's native Android UI as a web page,
+     served DIRECTLY by the ESP32 (see skateguard_local_sender.ino) —
+     no Firebase, no internet round-trip for telemetry/commands. The
+     phone and board are both on the same phone hotspot, so every
+     fetch() below is a single local hop (relative URLs — same origin
+     as whatever served this page, i.e. the board itself). Only the
+     Leaflet library and OpenStreetMap map tiles come from the internet
+     (fetched by the phone's own connection, not routed through the
+     board) — everything else here works with the board reachable but
+     no internet at all. */
+  :root {
+    --bg: #0D0D0F;
+    --card: #1B1D21;
+    --card-border: #2A2D33;
+    --text: #F5F5F7;
+    --text-dim: #9AA0AA;
+    --text-faint: #5A5F68;
+    --green: #2ECC71;
+    --red: #E53935;
+    --amber: #FFC107;
+    --blue: #3B82F6;
+    --orange: #FFA726;
+    --locator-blue: #4285F4;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; }
+  button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  #app { position: fixed; inset: 0; }
+
+  /* ---------- home screen ---------- */
+  #homeLayout {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 26px 32px;
+    gap: 0;
+  }
+  #homeLayout .title { font-size: 22px; font-weight: 700; margin-bottom: 24px; }
+  .btn-pill {
+    padding: 11px 22px;
+    border-radius: 24px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #06210f;
+  }
+  .btn-green { background: var(--green); color: #06210f; }
+  .btn-red { background: var(--red); color: #fff; }
+  .btn-blue { background: var(--blue); color: #fff; }
+  .btn-grey { background: var(--text-faint); color: #fff; }
+  /* Applies to EVERY button, not just .btn-pill. The session Start/Stop/
+     Save/Discard buttons only carry .btn-green/.btn-red/etc, so a
+     .btn-pill-scoped rule left them looking fully active while disabled —
+     you couldn't tell whether a press had registered. Android greys out
+     disabled buttons automatically, which is what the BLE app relies on;
+     the web needs it spelled out. Desaturating as well as dimming makes
+     "off" unmistakable against the bright green/red fills. */
+  button:disabled {
+    opacity: .35;
+    filter: grayscale(70%);
+    cursor: not-allowed;
+  }
+  #statusText { margin-top: 16px; color: var(--text-dim); font-size: 11px; text-align: center; max-width: 280px; }
+
+  /* ---------- dashboard ---------- */
+  #dashboardScroll {
+    position: absolute; inset: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    display: none;
+  }
+  #dashboardInner {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 13px 16px;
+  }
+
+  .dash-head {
+    position: relative;
+    height: 77px;
+    margin-top: 16px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+  }
+  .dash-title {
+    position: absolute; left: 0; right: 0; text-align: center;
+    font-size: 28px; font-weight: 700;
+  }
+  .batteries { display: flex; align-items: center; gap: 6px; z-index: 1; }
+  .batt {
+    width: 27px; height: 39px;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .batt-body {
+    width: 27px; height: 19px;
+    border: 1.5px solid var(--text);
+    border-radius: 4px;
+    background: #1B1D21;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column-reverse;
+  }
+  .batt-body::before {
+    content: "";
+    position: absolute;
+    top: -5px; left: 50%; transform: translateX(-50%);
+    width: 9px; height: 3px;
+    background: var(--text);
+    border-radius: 2px;
+  }
+  .batt-fill {
+    width: 100%;
+    height: 0%;
+    background: var(--green);
+    transition: height .3s ease, background .3s ease;
+  }
+  .batt-icon {
+    position: absolute;
+    font-size: 12px;
+    opacity: .9;
+    pointer-events: none;
+    filter: drop-shadow(0 0 1px rgba(0,0,0,.6));
+  }
+  .batt.dim { opacity: .35; }
+  .map-toggle-btn {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border-radius: 50%;
+    color: var(--text); font-size: 19px;
+    z-index: 1;
+  }
+  .map-toggle-btn:active { background: rgba(255,255,255,.08); }
+
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7px;
+    margin-top: 20px;
+  }
+  .metric-cell {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 18px;
+    padding: 20px;
+    min-height: 96px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center;
+  }
+  .metric-value { font-size: 24px; font-weight: 700; margin-top: 6px; }
+  .metric-label { font-size: 11px; color: var(--text-dim); letter-spacing: .02em; margin-top: 0; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 18px;
+    margin: 4px 6px 5px;
+    padding: 13px 16px;
+  }
+
+  .compare-row { display: flex; align-items: center; }
+  .compare-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .compare-count { font-size: 16px; font-weight: 700; }
+  .compare-track {
+    width: 150px; height: 8px;
+    margin: 0 20px 6px;
+    border-radius: 5px;
+    background: #2A2D33;
+    display: flex;
+    overflow: hidden;
+    flex: none;
+    align-self: flex-end;
+  }
+  .compare-land { background: var(--green); }
+  .compare-bail { background: var(--red); }
+
+  .card-head { position: relative; display: flex; justify-content: center; align-items: center; min-height: 20px; }
+  .view-recordings-btn {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border-radius: 50%;
+    color: var(--text); font-size: 15px;
+  }
+  .view-recordings-btn:active { background: rgba(255,255,255,.08); }
+
+  .session-metrics { display: flex; align-items: center; margin-top: 10px; }
+  .session-metric { flex: 1; display: flex; flex-direction: column; align-items: center; }
+  .session-metric .metric-value { font-size: 18px; }
+
+  #sessionStatusText { text-align: center; margin-top: 8px; color: var(--text-faint); font-size: 10px; }
+
+  .btn-row { display: flex; gap: 8px; width: 273px; max-width: 100%; margin: 12px auto 0; }
+  .btn-row button { flex: 1; padding: 10px; border-radius: 24px; font-size: 14px; font-weight: 600; }
+  #saveDiscardRow { display: none; }
+
+  #connectionStatusText { text-align: center; margin-top: 16px; margin-bottom: 20px; color: var(--text-faint); font-size: 10px; }
+
+  /* ---------- disconnected overlay ---------- */
+  #disconnectedOverlay {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,.7);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 20;
+  }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid rgba(245,245,247,.25);
+    border-top-color: var(--text);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+  #disconnectedOverlay .msg { text-align: center; font-size: 15px; font-weight: 700; padding: 0 24px; }
+
+  /* ---------- generic dialog shell ---------- */
+  .dialog-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.7);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 30;
+    padding: 20px;
+  }
+  .dialog-backdrop.open { display: flex; }
+  .dialog-box {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 18px;
+    overflow: hidden;
+    width: 100%;
+  }
+
+  /* map dialog */
+  #mapDialogBox { max-width: 520px; height: 75vh; position: relative; }
+  #routeMapDiv { width: 100%; height: 100%; }
+  /* Anything layered over the map needs an explicit z-index. Leaflet gives
+     its own panes z-index 200-700 (tiles 200, overlays 400, markers 600),
+     and a positioned sibling left at z-index:auto paints UNDERNEATH all of
+     them — so the close button and these badges were being covered by the
+     map tiles the moment tiles actually loaded. Above Leaflet's controls
+     (1000) so nothing the library adds later can bury them either. */
+  .map-overlay-badge {
+    position: absolute;
+    z-index: 1200;
+    /* Also needs real offsets: with position:absolute and no top/left it
+       sits at its static position, which is after the full-height map div
+       — i.e. below the box, clipped away by overflow:hidden. Top-left
+       matches mapSessionStatsText's layout_gravity in the Android app. */
+    top: 8px;
+    left: 8px;
+    background: rgba(0,0,0,.6);
+    padding: 10px 12px;
+    border-radius: 10px;
+    /* Large enough to read at a glance on a phone while riding. */
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.45;
+    white-space: pre-line;
+  }
+  /* The app centres this one (layout_gravity="center") — it's the "waiting
+     for a fix" message, not a stats corner. */
+  #mapStatusText,
+  #sessionRouteStatusText {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    /* Font size, weight and padding come from .map-overlay-badge, so these
+       messages look the same as the live map's stats overlay. */
+    text-align: center;
+    /* With left:50% an absolute box may only shrink-to-fit into the right
+       half, so longer messages would wrap early; size to the text instead,
+       capped to the dialog. */
+    width: max-content;
+    max-width: 85%;
+  }
+  /* Centre over the map area, not the info panel below it (84px). */
+  #sessionRouteStatusText { top: calc((100% - 84px) / 2); }
+  #mapSessionStatsText { top: 8px; left: 8px; }
+  .dialog-close-btn {
+    position: absolute; top: 8px; right: 8px;
+    /* See .map-overlay-badge — without this the map tiles paint over it and
+       the close button is both invisible and unclickable. */
+    z-index: 1200;
+    width: 40px; height: 40px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text); font-size: 18px;
+  }
+
+  /* sessions dialog */
+  #sessionsDialogBox { max-width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
+
+  /* ---- Debug dialog ---- */
+  #debugDialogBox { max-width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
+  #debugBody { overflow-y: auto; padding: 4px 16px 16px; }
+  .debug-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .debug-table td { padding: 5px 4px; border-bottom: 1px solid var(--card-border); }
+  .debug-table td:last-child { border-bottom: 1px solid var(--card-border); }
+  .debug-table tr:last-child td { border-bottom: none; }
+  .debug-table td:first-child { color: var(--text-dim); }
+  /* Values are monospace + tabular so rapidly-changing numbers (gyro,
+     accumulated rotation) don't make the column jitter while you read it. */
+  .debug-table td:last-child {
+    text-align: right;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .debug-links { display: flex; gap: 16px; justify-content: center; margin-top: 14px; }
+  .debug-links a { color: var(--blue); font-size: 12px; text-decoration: none; }
+  .debug-links a:hover { text-decoration: underline; }
+  .sessions-head {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    padding: 8px; min-height: 36px;
+    font-size: 13px; font-weight: 700;
+  }
+  .icon-btn-corner {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 36px; height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border-radius: 50%;
+    color: var(--text); font-size: 16px;
+  }
+  .icon-btn-corner:active { background: rgba(255,255,255,.08); }
+  #sessionsList { overflow-y: auto; padding: 0 16px 12px; }
+  .session-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .session-row:last-child { border-bottom: none; }
+  .session-row .label { flex: 1; font-size: 11px; background: transparent; color: var(--text); text-align: left; }
+  .session-row .del-btn {
+    width: 32px; height: 32px; flex: none;
+    background: transparent; color: var(--red); font-size: 15px;
+    border-radius: 50%;
+  }
+  .session-row .del-btn:active { background: rgba(229,57,53,.15); }
+  .session-row .dl-btn {
+    width: 32px; height: 32px; flex: none;
+    background: transparent; color: var(--blue); font-size: 15px;
+    border-radius: 50%;
+  }
+  .session-row .dl-btn:active { background: rgba(59,130,246,.15); }
+  #sessionsEmpty { color: var(--text-dim); padding: 12px 0; font-size: 12px; }
+
+  /* session route dialog */
+  #sessionRouteDialogBox { max-width: 480px; height: 55vh; position: relative; }
+  /* The map gives up exactly the info panel's fixed height below it. Leaflet
+     needs a concrete size to lay tiles out, so keep these two 84px in step. */
+  #sessionRouteMapDiv { width: 100%; height: calc(100% - 84px); }
+  #sessionRouteInfoText {
+    height: 84px; padding: 8px 10px 10px;
+    display: flex; flex-direction: column; justify-content: center; gap: 6px;
+    border-top: 1px solid var(--card-border);
+  }
+  .route-info-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-align: center; }
+  .route-info-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .route-info-cell { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+  .route-info-value {
+    font-size: 18px; font-weight: 700; line-height: 1.1;
+    color: var(--text); font-variant-numeric: tabular-nums;
+  }
+  .route-info-value.land { color: var(--green); }
+  .route-info-value.bail { color: var(--red); }
+  .route-info-label { font-size: 10px; color: var(--text-dim); margin-top: 2px; white-space: nowrap; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: #2A2D33; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ HOME ============ -->
+  <div id="homeLayout">
+    <div class="title">SkateGuard</div>
+    <button id="openDashboardButton" class="btn-pill btn-green">Open Dashboard</button>
+    <div id="statusText"></div>
+  </div>
+
+  <!-- ============ DASHBOARD ============ -->
+  <div id="dashboardScroll">
+    <div id="dashboardInner">
+
+      <div class="dash-head">
+        <div class="batteries">
+          <div class="batt" id="battWrap" title="Board battery">
+            <div class="batt-body"><div class="batt-fill" id="battFill"></div></div>
+            <span class="batt-icon">🛹</span>
+          </div>
+          <div class="batt dim" id="rxBattWrap" title="No wearable in this build">
+            <div class="batt-body"><div class="batt-fill" id="rxBattFill"></div></div>
+            <span class="batt-icon">⌚</span>
+          </div>
+        </div>
+        <div class="dash-title">Dashboard</div>
+        <button class="map-toggle-btn" id="mapToggleButton" aria-label="Open route map">🗺️</button>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-cell"><div class="metric-value" id="speedValue">--</div><div class="metric-label">Speed (km/h)</div></div>
+        <div class="metric-cell"><div class="metric-value" id="gpsValue">--</div><div class="metric-label">GPS</div></div>
+        <div class="metric-cell"><div class="metric-value" id="wobbleValue">--</div><div class="metric-label">Wobble</div></div>
+        <div class="metric-cell"><div class="metric-value" id="trickValue">--</div><div class="metric-label">Trick Status</div></div>
+      </div>
+
+      <div class="card">
+        <div class="compare-row">
+          <div class="compare-col">
+            <div class="metric-label">LAND</div>
+            <div class="compare-count" style="color:var(--green)" id="landCountText">0</div>
+          </div>
+          <div class="compare-track">
+            <!-- 50/50 to match what updateCompareBar() renders at 0/0, so
+                 the very first paint (before any telemetry arrives) already
+                 looks right rather than flashing a sliver. -->
+            <div class="compare-land" id="landBar" style="flex:50"></div>
+            <div class="compare-bail" id="bailBar" style="flex:50"></div>
+          </div>
+          <div class="compare-col">
+            <div class="metric-label">BAIL</div>
+            <div class="compare-count" style="color:var(--red)" id="bailCountText">0</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="metric-label">SESSION RECORDING</div>
+          <button class="view-recordings-btn" id="viewRecordingsButton" aria-label="View recorded sessions">📋</button>
+        </div>
+
+        <div class="session-metrics">
+          <div class="session-metric"><div class="metric-value" id="sessionDistanceValue">0.00</div><div class="metric-label">Distance (km)</div></div>
+          <div class="session-metric"><div class="metric-value" id="sessionSpeedValue">0.0</div><div class="metric-label">Session Speed (km/h)</div></div>
+        </div>
+
+        <div id="sessionStatusText">Not recording</div>
+
+        <div class="btn-row" id="startStopRow">
+          <button id="startRecordingButton" class="btn-green">Start</button>
+          <button id="stopRecordingButton" class="btn-red" disabled>Stop</button>
+        </div>
+        <div class="btn-row" id="saveDiscardRow">
+          <button id="saveRecordingButton" class="btn-blue">Save</button>
+          <button id="discardRecordingButton" class="btn-grey">Discard</button>
+        </div>
+      </div>
+
+      <div id="connectionStatusText"></div>
+    </div>
+  </div>
+
+  <div id="disconnectedOverlay">
+    <div>
+      <div class="spinner"></div>
+      <div class="msg">Trying to connect…</div>
+    </div>
+  </div>
+
+  <!-- ============ MAP DIALOG ============ -->
+  <div class="dialog-backdrop" id="mapDialogBackdrop">
+    <div class="dialog-box" id="mapDialogBox">
+      <div id="routeMapDiv"></div>
+      <div class="map-overlay-badge" id="mapStatusText">Waiting for GPS fix…</div>
+      <div class="map-overlay-badge" id="mapSessionStatsText" style="display:none"></div>
+      <button class="dialog-close-btn" id="closeMapButton" aria-label="Close map">✕</button>
+    </div>
+  </div>
+
+  <!-- ============ SESSIONS DIALOG ============ -->
+  <div class="dialog-backdrop" id="sessionsDialogBackdrop">
+    <div class="dialog-box" id="sessionsDialogBox">
+      <div class="sessions-head">
+        <!-- Same corner the BLE app puts its debug button in (see
+             sessionsDebugButton in dialog_sessions.xml). -->
+        <button class="icon-btn-corner" id="sessionsDebugButton" style="left:8px" aria-label="Debug">🐞</button>
+        <span>Recorded Sessions (last 7)</span>
+        <button class="icon-btn-corner" id="sessionsCloseButton" style="right:8px" aria-label="Close">✕</button>
+      </div>
+      <div id="sessionsList"></div>
+    </div>
+  </div>
+
+  <!-- ============ DEBUG DIALOG ============
+       The BLE app's debug button has to walk you through switching the
+       phone's WiFi over to the board's own AP, then loads the board's
+       debug page in a WebView. None of that applies here — this page is
+       already served by the board, so the same figures come straight from
+       GET /api/debug. -->
+  <div class="dialog-backdrop" id="debugDialogBackdrop">
+    <div class="dialog-box" id="debugDialogBox">
+      <div class="sessions-head">
+        <span>Debug</span>
+        <button class="icon-btn-corner" id="debugCloseButton" style="right:8px" aria-label="Close">✕</button>
+      </div>
+      <div id="debugBody">
+        <table class="debug-table" id="debugTable"></table>
+        <div class="debug-links">
+          <a href="/log" target="_blank" rel="noopener">Download stage_log.csv</a>
+          <a href="/clear" id="debugClearLink">Clear log</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SESSION ROUTE DIALOG ============ -->
+  <div class="dialog-backdrop" id="sessionRouteDialogBackdrop">
+    <div class="dialog-box" id="sessionRouteDialogBox">
+      <div id="sessionRouteMapDiv"></div>
+      <div class="map-overlay-badge" id="sessionRouteStatusText">Loading…</div>
+      <button class="dialog-close-btn" id="closeSessionMapButton" aria-label="Close">✕</button>
+      <div id="sessionRouteInfoText"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---- Local API — same origin as this page (the board itself), so
+  // these are always relative fetches, one local hop over the shared
+  // hotspot. No host to configure, no internet needed for any of this.
+  // 500ms matches SkateGuardBLEApp exactly — that's the board's
+  // BLE_NOTIFY_INTERVAL_MS in the BLE build, so the numbers on screen move
+  // at the same rate here as they do in the native app. It's a floor set by
+  // taste, not by the transport: /api/live builds fresh on every request
+  // from RAM over one local hop, so 250ms also works fine if you want it
+  // snappier. Don't raise it above ~1000ms or trick pulses (latched for
+  // 2000ms board-side) start getting missed between polls.
+  const POLL_INTERVAL_MS = 500;
+  const STALE_AFTER_MS = 4000;   // no updatedAtMs change in this long -> "disconnected"
+  const SESSION_ROUTE_SAMPLE_MS = 30000;
+
+  async function apiGet(path) {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
+  }
+  async function apiCommand(cmd) {
+    const res = await fetch("/api/command?cmd=" + encodeURIComponent(cmd));
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
+  }
+
+  // ---------------- elements ----------------
+  const homeLayout = document.getElementById("homeLayout");
+  const dashboardScroll = document.getElementById("dashboardScroll");
+  const statusText = document.getElementById("statusText");
+  const openDashboardButton = document.getElementById("openDashboardButton");
+
+  const speedValue = document.getElementById("speedValue");
+  const gpsValue = document.getElementById("gpsValue");
+  const wobbleValue = document.getElementById("wobbleValue");
+  const trickValue = document.getElementById("trickValue");
+  const landCountText = document.getElementById("landCountText");
+  const bailCountText = document.getElementById("bailCountText");
+  const landBar = document.getElementById("landBar");
+  const bailBar = document.getElementById("bailBar");
+  const battFill = document.getElementById("battFill");
+  const rxBattFill = document.getElementById("rxBattFill");
+  const rxBattWrap = document.getElementById("rxBattWrap");
+  const connectionStatusText = document.getElementById("connectionStatusText");
+  const disconnectedOverlay = document.getElementById("disconnectedOverlay");
+
+  const sessionDistanceValue = document.getElementById("sessionDistanceValue");
+  const sessionSpeedValue = document.getElementById("sessionSpeedValue");
+  const sessionStatusText = document.getElementById("sessionStatusText");
+  const startStopRow = document.getElementById("startStopRow");
+  const saveDiscardRow = document.getElementById("saveDiscardRow");
+  const startRecordingButton = document.getElementById("startRecordingButton");
+  const stopRecordingButton = document.getElementById("stopRecordingButton");
+  const saveRecordingButton = document.getElementById("saveRecordingButton");
+  const discardRecordingButton = document.getElementById("discardRecordingButton");
+  const viewRecordingsButton = document.getElementById("viewRecordingsButton");
+
+  let connected = false;
+  let pollHandle = null;
+  let sessionActionInFlight = false;
+
+  // ---------------- battery ----------------
+  function setBattery(fillEl, percent) {
+    const clamped = Math.max(0, Math.min(100, percent));
+    let color = "var(--green)";
+    if (clamped <= 25) color = "var(--red)";
+    else if (clamped <= 50) color = "var(--amber)";
+    fillEl.style.height = clamped + "%";
+    fillEl.style.background = color;
+  }
+
+  // ---------------- compare bar ----------------
+  function updateCompareBar(land, bail) {
+    // The app uses Android LinearLayout weights, which ALWAYS normalise —
+    // weight 0.05 vs 0.05 gives a 50/50 split of the full track. CSS
+    // flex-grow doesn't: it only fills the container once the values sum
+    // to >= 1, so copying the app's numbers directly left both bars at
+    // 0.05 (sum 0.1) filling a tenth of the track and the rest empty.
+    // That's the "0 land / 0 bail looks broken until the first trick"
+    // case — at 7 vs 3 the sum is 10 and it happens to look right.
+    //
+    // Normalising to a fixed total reproduces the Android behaviour at
+    // every value, including 0/0.
+    const l = Math.max(land, 0.05);
+    const b = Math.max(bail, 0.05);
+    const total = l + b;
+    landBar.style.flex = String((l / total) * 100);
+    bailBar.style.flex = String((b / total) * 100);
+  }
+
+  // ---------------- session buttons ----------------
+  function updateSessionButtons(sessionState) {
+    if (sessionActionInFlight) return;
+    if (sessionState === "recording") {
+      sessionStatusText.textContent = "Recording…";
+      startStopRow.style.display = "flex";
+      saveDiscardRow.style.display = "none";
+      startRecordingButton.disabled = true;
+      stopRecordingButton.disabled = false;
+    } else if (sessionState === "stopped") {
+      sessionStatusText.textContent = "Stopped — save this session or discard it?";
+      startStopRow.style.display = "none";
+      saveDiscardRow.style.display = "flex";
+      saveRecordingButton.disabled = false;
+      discardRecordingButton.disabled = false;
+    } else {
+      sessionStatusText.textContent = "Not recording";
+      startStopRow.style.display = "flex";
+      saveDiscardRow.style.display = "none";
+      startRecordingButton.disabled = false;
+      stopRecordingButton.disabled = true;
+    }
+  }
+
+  async function runSessionAction(cmd) {
+    if (sessionActionInFlight) return;
+    sessionActionInFlight = true;
+    startRecordingButton.disabled = true;
+    stopRecordingButton.disabled = true;
+    saveRecordingButton.disabled = true;
+    discardRecordingButton.disabled = true;
+    try {
+      await apiCommand(cmd);
+    } catch (e) { /* next poll cycle reflects whatever the board's state actually is */ }
+    setTimeout(() => { sessionActionInFlight = false; }, 300);
+  }
+  startRecordingButton.addEventListener("click", () => runSessionAction("start"));
+  stopRecordingButton.addEventListener("click", () => runSessionAction("stop"));
+  saveRecordingButton.addEventListener("click", () => runSessionAction("save"));
+  discardRecordingButton.addEventListener("click", () => runSessionAction("discard"));
+
+  // ---------------- map state (live route) ----------------
+  let sessionPathPoints = [];   // {lat,lng} sampled every 30s while recording
+  let lastSessionSampleMs = 0;
+  let wasRecordingLastUpdate = false;
+  let liveLocator = null;       // {lat,lng} — current position
+
+  function updateSessionPath(t) {
+    const isRecording = t.sessionState === "recording";
+    if (isRecording && !wasRecordingLastUpdate) {
+      sessionPathPoints = [];
+      lastSessionSampleMs = 0;
+    }
+    wasRecordingLastUpdate = isRecording;
+
+    if (!isRecording || !t.gpsFix || (t.gpsLat === 0 && t.gpsLng === 0)) return;
+    const now = Date.now();
+    if (lastSessionSampleMs !== 0 && now - lastSessionSampleMs < SESSION_ROUTE_SAMPLE_MS) return;
+    lastSessionSampleMs = now;
+    sessionPathPoints.push({ lat: t.gpsLat, lng: t.gpsLng });
+  }
+
+  // ---------------- telemetry render ----------------
+  function updateUi(t) {
+    speedValue.textContent = (t.speedKmh ?? 0).toFixed(1);
+    gpsValue.textContent = t.gpsFix ? "YES" : "NO";
+    wobbleValue.textContent = t.wobbleActive ? "YES" : "No";
+    trickValue.textContent = t.landActive ? "LAND" : (t.bailActive ? "BAIL" : "--");
+    landCountText.textContent = t.kickflipCount ?? 0;
+    bailCountText.textContent = t.bailCount ?? 0;
+    updateCompareBar(t.kickflipCount ?? 0, t.bailCount ?? 0);
+
+    setBattery(battFill, t.batteryPercent ?? 0);
+    if (t.hasReceiver) {
+      rxBattWrap.classList.remove("dim");
+      setBattery(rxBattFill, t.receiverBatteryPercent ?? 0);
+    } else {
+      rxBattWrap.classList.add("dim");
+      rxBattFill.style.height = "0%";
+    }
+
+    sessionDistanceValue.textContent = (t.sessionDistanceKm ?? 0).toFixed(2);
+    // Live speed, but only while a session is actually recording — 0.0 when
+    // idle or stopped. That makes it this session's speed rather than a
+    // second copy of the always-on Speed tile above. (The map overlay
+    // still shows the session average from sessionAvgSpeedKmh.)
+    sessionSpeedValue.textContent =
+      (t.sessionState === "recording" ? (t.speedKmh ?? 0) : 0).toFixed(1);
+    sessionActionInFlight = false;
+    updateSessionButtons(t.sessionState || "idle");
+
+    if (t.gpsFix && (t.gpsLat !== 0 || t.gpsLng !== 0)) {
+      liveLocator = { lat: t.gpsLat, lng: t.gpsLng };
+    }
+    updateSessionPath(t);
+
+    if (mapDialogOpen) renderLiveMap();
+    if (mapDialogOpen) updateMapSessionStats(t);
+  }
+
+  function updateMapSessionStats(t) {
+    const el = document.getElementById("mapSessionStatsText");
+    el.style.display = "block";
+    el.textContent =
+      // Live speed first — on a map you're watching while riding, how fast
+      // you're going right now matters more than the session totals.
+      `Speed: ${(t.speedKmh ?? 0).toFixed(1)} km/h\n` +
+      `Distance: ${(t.sessionDistanceKm ?? 0).toFixed(2)} km\n` +
+      `Avg speed: ${(t.sessionAvgSpeedKmh ?? 0).toFixed(1)} km/h\n` +
+      `Land: ${t.kickflipCount ?? 0}   Bail: ${t.bailCount ?? 0}`;
+  }
+
+  // ---------------- polling / connection state ----------------
+  // updatedAtMs is the BOARD's millis(), not wall-clock — track how long
+  // it's been since WE last saw it change; if it hasn't advanced in
+  // STALE_AFTER_MS of our own polling time, treat the link as stale.
+  let lastSeenBoardMs = -1;
+  let lastSeenChangedAtWall = 0;
+
+  async function pollLoop() {
+    try {
+      const t = await apiGet("/api/live");
+      if (t && typeof t.updatedAtMs === "number") {
+        if (t.updatedAtMs !== lastSeenBoardMs) {
+          lastSeenBoardMs = t.updatedAtMs;
+          lastSeenChangedAtWall = Date.now();
+        }
+        const stale = Date.now() - lastSeenChangedAtWall > STALE_AFTER_MS;
+        setConnected(!stale);
+        if (!stale) updateUi(t);
+      } else {
+        setConnected(false);
+      }
+    } catch (e) {
+      setConnected(false);
+    }
+  }
+
+  function setConnected(isConnected) {
+    if (isConnected === connected) return;
+    connected = isConnected;
+    if (isConnected) {
+      disconnectedOverlay.style.display = "none";
+      connectionStatusText.textContent = "";
+    } else {
+      disconnectedOverlay.style.display = "flex";
+      connectionStatusText.textContent = "Connection lost — retrying…";
+    }
+  }
+
+  function startDashboard() {
+    homeLayout.style.display = "none";
+    dashboardScroll.style.display = "block";
+    statusText.textContent = "";
+    pollLoop();
+    pollHandle = setInterval(pollLoop, POLL_INTERVAL_MS);
+  }
+
+  openDashboardButton.addEventListener("click", () => {
+    statusText.textContent = "Connecting…";
+    startDashboard();
+  });
+
+  // ---------------- Leaflet loader (OpenStreetMap tiles — free, no key) ----------------
+  let leafletPromise = null;
+  function loadLeaflet() {
+    if (leafletPromise) return leafletPromise;
+    leafletPromise = new Promise((resolve, reject) => {
+      if (window.L) { resolve(window.L); return; }
+      const script = document.createElement("script");
+      script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+      script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+      script.crossOrigin = "";
+      script.onload = () => resolve(window.L);
+      script.onerror = () => reject(new Error("Failed to load Leaflet"));
+      document.head.appendChild(script);
+    });
+    return leafletPromise;
+  }
+
+  const OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const OSM_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+
+  // Dashed line + ringed dot markers, matching the native app's own
+  // PatternItem dash(20)/gap(12) route and hand-drawn locator/waypoint
+  // bitmaps (see MainActivity.kt locatorDotIcon()/waypointDotIcon()).
+  function dashedRoute(L, points) {
+    return L.polyline(points.map(p => [p.lat, p.lng]), { color: "#FFA726", weight: 3, dashArray: "10, 6" });
+  }
+  function dotMarker(L, p, fillColor, radius) {
+    return L.circleMarker([p.lat, p.lng], { radius, fillColor, fillOpacity: 1, color: "#FFFFFF", weight: 2 });
+  }
+
+  // ---------------- live route map ----------------
+  const mapDialogBackdrop = document.getElementById("mapDialogBackdrop");
+  const mapStatusText = document.getElementById("mapStatusText");
+  let mapDialogOpen = false;
+  let liveMap = null;
+  let livePolyline = null;
+  let liveLocatorMarker = null;
+  let liveWaypointMarkers = [];
+  let hasCenteredLiveCamera = false;
+  // Timestamp rather than an "is dragging" boolean, deliberately: a flag
+  // cleared only by dragend stays stuck ON if that event is ever missed
+  // (cancelled touch, lost pointer capture, an exception mid-gesture), and
+  // auto-follow would then be silently dead for the rest of the ride with
+  // no way to get it back. A timestamp always heals itself.
+  let lastUserMapInteractionMs = 0;
+  const FOLLOW_RESUME_AFTER_MS = 3000;
+
+  async function ensureLiveMap() {
+    if (liveMap) return liveMap;
+    const L = await loadLeaflet();
+    // Zoom buttons go bottom-right: Leaflet's default top-left corner is
+    // where the stats badge sits, and the badge (z-index 1200) covers them.
+    liveMap = L.map("routeMapDiv", { zoomControl: false }).setView([0, 0], 17);
+    L.control.zoom({ position: "bottomright" }).addTo(liveMap);
+    // Only USER-driven events, never move/moveend — panTo below fires those
+    // itself, so following would suppress itself after its first pan.
+    // drag/dragstart/dragend come solely from Leaflet's Drag handler, and
+    // panTo never changes zoom, so zoomstart here is the rider too.
+    liveMap.on("dragstart drag dragend zoomstart", () => {
+      lastUserMapInteractionMs = Date.now();
+    });
+    L.tileLayer(OSM_TILE_URL, { attribution: OSM_ATTRIBUTION, maxZoom: 19 }).addTo(liveMap);
+    livePolyline = dashedRoute(L, []).addTo(liveMap);
+    return liveMap;
+  }
+
+  function renderLiveMap() {
+    if (!liveMap || !window.L) return;
+    const hasAny = sessionPathPoints.length > 0 || liveLocator;
+    if (!hasAny) {
+      mapStatusText.style.display = "block";
+      mapStatusText.textContent = "Waiting for GPS fix…";
+      return;
+    }
+    mapStatusText.style.display = "none";
+
+    livePolyline.setLatLngs(sessionPathPoints.map(p => [p.lat, p.lng]));
+
+    liveWaypointMarkers.forEach(m => m.remove());
+    liveWaypointMarkers = sessionPathPoints.map(p => dotMarker(L, p, "#E53935", 5).addTo(liveMap));
+
+    if (liveLocator) {
+      if (!liveLocatorMarker) {
+        liveLocatorMarker = dotMarker(L, liveLocator, "#4285F4", 9).addTo(liveMap);
+      } else {
+        liveLocatorMarker.setLatLng([liveLocator.lat, liveLocator.lng]);
+      }
+      // Mirrors updateLocator() in MainActivity.kt: jump to the first fix
+      // and set the zoom, then FOLLOW every fix after that. The web port
+      // originally implemented only the first half, so the dot kept moving
+      // while the camera stayed frozen where you started — ride a hundred
+      // metres and you're off-screen until you drag the map yourself.
+      //
+      // panTo is the Leaflet equivalent of the app's animateCamera(newLatLng):
+      // animated, and it preserves whatever zoom the rider has chosen
+      // (setView would yank them back to 17 on every single update).
+      if (!hasCenteredLiveCamera) {
+        liveMap.setView([liveLocator.lat, liveLocator.lng], 17);
+        hasCenteredLiveCamera = true;
+      } else if (Date.now() - lastUserMapInteractionMs > FOLLOW_RESUME_AFTER_MS) {
+        // Held off while the rider is panning or zooming: at a 500ms poll,
+        // yanking the map back under a moving finger makes it impossible to
+        // look ahead. Following resumes on its own a few seconds after they
+        // stop, so there's no stuck state and no recentre button to hunt for.
+        liveMap.panTo([liveLocator.lat, liveLocator.lng]);
+      }
+    }
+  }
+
+  document.getElementById("mapToggleButton").addEventListener("click", async () => {
+    mapDialogOpen = true;
+    mapDialogBackdrop.classList.add("open");
+    mapStatusText.style.display = "block";
+    mapStatusText.textContent = "Loading map…";
+    try {
+      await ensureLiveMap();
+      liveMap.invalidateSize();
+      renderLiveMap();
+    } catch (e) {
+      mapStatusText.textContent = "Map unavailable on this device";
+    }
+  });
+  document.getElementById("closeMapButton").addEventListener("click", () => {
+    mapDialogOpen = false;
+    mapDialogBackdrop.classList.remove("open");
+    document.getElementById("mapSessionStatsText").style.display = "none";
+  });
+
+  // ---------------- sessions dialog ----------------
+  const sessionsDialogBackdrop = document.getElementById("sessionsDialogBackdrop");
+  const sessionsList = document.getElementById("sessionsList");
+
+  function parseSessionsCsv(csv) {
+    if (!csv || !csv.trim()) return [];
+    const rows = csv.trim().split(/\r?\n/).slice(1);
+    return rows.map((line, i) => {
+      const p = line.split(",");
+      if (p.length < 3) return null;
+      return { index: i + 1, avgSpeedKmh: p[1] || "0.00", distanceKm: p[2] || "0.000", landCount: p[3] || "0", bailCount: p[4] || "0" };
+    }).filter(Boolean);
+  }
+
+  // Positional: line N of routes.csv belongs to session N. A session saved
+  // without GPS has no route — current firmware writes "-" for that, older
+  // firmware wrote a blank line — and both must stay in the list as real
+  // entries. This used to filter blank lines out, which slid every later
+  // route onto the wrong session. Only the file's single trailing newline
+  // is dropped, and "-" is normalised to "" so it reads as "no route".
+  function parseRoutesCsv(csv) {
+    if (!csv) return [];
+    const lines = csv.split(/\r?\n/);
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.map(l => (l.trim() === "-" ? "" : l));
+  }
+
+  function parseRouteLine(line) {
+    if (!line) return [];
+    return line.split(";").map(seg => {
+      const [lat, lng] = seg.split(":").map(Number);
+      return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+    }).filter(Boolean);
+  }
+
+  async function openSessionsDialog() {
+    sessionsDialogBackdrop.classList.add("open");
+    sessionsList.innerHTML = `<div id="sessionsEmpty">Loading…</div>`;
+    let device;
+    try { device = await apiGet("/api/sessions"); } catch (e) { device = null; }
+    const sessions = parseSessionsCsv(device?.sessionsCsv);
+    const routeLines = parseRoutesCsv(device?.routesCsv);
+
+    if (sessions.length === 0) {
+      sessionsList.innerHTML = `<div id="sessionsEmpty">No sessions recorded yet.</div>`;
+      return;
+    }
+    sessionsList.innerHTML = "";
+    sessions.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "session-row";
+      row.innerHTML = `
+        <button class="label">Session ${s.index}:  ${s.distanceKm} km   •   avg ${s.avgSpeedKmh} km/h   •   L${s.landCount}/B${s.bailCount}</button>
+        <button class="dl-btn" aria-label="Download session ${s.index}">⬇</button>
+        <button class="del-btn" aria-label="Delete session ${s.index}">🗑</button>
+      `;
+      row.querySelector(".label").addEventListener("click", () => {
+        sessionsDialogBackdrop.classList.remove("open");
+        openSessionRouteDialog(s, routeLines[s.index - 1]);
+      });
+      // Just this one session: its CSV row, plus its map image only when it
+      // actually has a route. A session with no route (e.g. practising
+      // kickflips in one spot, where GPS never logs a path) is perfectly
+      // normal, so it simply gets the CSV and no image.
+      // Uses `device` — the data this list was drawn from — so the file
+      // always matches the row that was tapped, even if the list refreshes.
+      row.querySelector(".dl-btn").addEventListener("click", async (ev) => {
+        const dlBtn = ev.currentTarget;
+        if (dlBtn.disabled) return;
+        dlBtn.disabled = true;   // no double-saves while the image is drawn
+        const stamp = downloadStamp();
+
+        saveBlob(
+          new Blob([buildSessionsExportCsv(device, s.index)], { type: "text/csv" }),
+          `skateguard_session_${s.index}_${stamp}.csv`
+        );
+
+        const points = parseRouteLine(routeLines[s.index - 1]);
+        if (points.length > 0) {
+          dlBtn.textContent = "…";
+          try {
+            const png = await renderSessionRouteImage(s, points);
+            saveBlob(png, `skateguard_session_${s.index}_map_${stamp}.png`);
+          } catch (e) {
+            console.warn("Route map for session " + s.index + " failed:", e);
+          }
+          dlBtn.textContent = "⬇";
+        }
+        dlBtn.disabled = false;
+      });
+      row.querySelector(".del-btn").addEventListener("click", async () => {
+        await apiCommand("delete:" + s.index);
+        setTimeout(openSessionsDialog, 300);
+      });
+      sessionsList.appendChild(row);
+    });
+  }
+  viewRecordingsButton.addEventListener("click", openSessionsDialog);
+  document.getElementById("sessionsCloseButton").addEventListener("click", () => sessionsDialogBackdrop.classList.remove("open"));
+
+  // ---------------- download sessions ----------------
+  // Built in the browser from the same /api/sessions data the list shows and
+  // saved through a local blob link. That keeps this a page-only change — no
+  // new firmware route to add (and keep in sync) in both sender sketches.
+  //
+  // One row per saved session, routes included, so the file stands alone.
+  // saved_at_uptime_ms is the board's millis() when Save was pressed (time
+  // since that boot), not a calendar date — the board has no clock.
+  function csvField(value) {
+    const s = String(value ?? "");
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  // onlyIndex (1-based, as shown in the list) limits the file to that one
+  // session — used by each row's own download button.
+  function buildSessionsExportCsv(data, onlyIndex = null) {
+    const header = "session,saved_at_uptime_ms,avg_speed_kmh,distance_km,land_count,bail_count,route_points,route";
+    const rawRows = (data?.sessionsCsv || "").trim().split(/\r?\n/).slice(1);
+    const routeLines = parseRoutesCsv(data?.routesCsv);
+    const rows = [];
+    rawRows.forEach((line, i) => {
+      const p = line.split(",");
+      if (p.length < 3) return;   // same skip rule parseSessionsCsv uses
+      if (onlyIndex !== null && i + 1 !== onlyIndex) return;
+      const route = routeLines[i] || "";
+      rows.push([
+        i + 1, p[0], p[1], p[2], p[3] ?? "0", p[4] ?? "0",
+        parseRouteLine(route).length, route,
+      ].map(csvField).join(","));
+    });
+    return header + "\n" + rows.join("\n") + "\n";
+  }
+
+  // ---------------- route map images ----------------
+  // One PNG per saved session: the route over a street map, with the ride
+  // stats underneath — something you can open in Gallery or share, unlike
+  // the raw coordinates in the CSV.
+  //
+  // Drawn onto a canvas by hand (tile maths + the tiles themselves) rather
+  // than screenshotting the Leaflet map: that needs no extra library, and it
+  // works straight from the session list without opening that map on screen.
+  // OpenStreetMap's tile server sends CORS headers, so tiles loaded with
+  // crossOrigin="anonymous" can be exported from the canvas.
+  const ROUTE_IMG_W = 1080;
+  const ROUTE_IMG_MAP_H = 1080;
+  const ROUTE_IMG_INFO_H = 300;
+  const ROUTE_IMG_PAD = 150;        // keep the route clear of the image edges
+  // OSM tiles are 256px; drawn at 2x so street names are still readable when
+  // the image is viewed full-width on a phone rather than tiny and crisp.
+  const ROUTE_IMG_TILE_PX = 512;
+  const ROUTE_IMG_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const ROUTE_IMG_FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+
+  // Web Mercator: lat/lng -> pixel position in the whole world map at zoom z.
+  function routeWorldPx(lat, lng, z) {
+    const scale = ROUTE_IMG_TILE_PX * Math.pow(2, z);
+    const latR = lat * Math.PI / 180;
+    return {
+      x: (lng + 180) / 360 * scale,
+      y: (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * scale,
+    };
+  }
+
+  // Closest zoom at which the whole route still fits inside the padded map
+  // area. A single point has no extent, so it gets the app's usual zoom 17.
+  function pickRouteZoom(points) {
+    if (points.length < 2) return 17;
+    for (let z = 18; z >= 3; z--) {
+      const px = points.map(p => routeWorldPx(p.lat, p.lng, z));
+      const w = Math.max(...px.map(p => p.x)) - Math.min(...px.map(p => p.x));
+      const h = Math.max(...px.map(p => p.y)) - Math.min(...px.map(p => p.y));
+      if (w <= ROUTE_IMG_W - 2 * ROUTE_IMG_PAD && h <= ROUTE_IMG_MAP_H - 2 * ROUTE_IMG_PAD) return z;
+    }
+    return 3;
+  }
+
+  // Resolves to the tile image, or null if it fails or takes over 8s — a
+  // missing tile shouldn't stop the image from being produced.
+  function loadRouteTile(z, x, y) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      const timer = setTimeout(() => resolve(null), 8000);
+      img.onload = () => { clearTimeout(timer); resolve(img); };
+      img.onerror = () => { clearTimeout(timer); resolve(null); };
+      img.src = ROUTE_IMG_TILE_URL.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+    });
+  }
+
+  function canvasToPngBlob(canvas) {
+    return new Promise((resolve, reject) => {
+      try {
+        canvas.toBlob(b => (b ? resolve(b) : reject(new Error("toBlob returned null"))), "image/png");
+      } catch (e) {
+        reject(e);   // SecurityError if a tile arrived without CORS permission
+      }
+    });
+  }
+
+  async function renderSessionRouteImage(session, points, withTiles = true) {
+    const W = ROUTE_IMG_W, MAP_H = ROUTE_IMG_MAP_H, TILE = ROUTE_IMG_TILE_PX;
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = MAP_H + ROUTE_IMG_INFO_H;
+    const ctx = canvas.getContext("2d");
+
+    // Plain map-coloured ground: what shows wherever a tile couldn't load.
+    ctx.fillStyle = "#E9E5DC";
+    ctx.fillRect(0, 0, W, MAP_H);
+
+    const z = pickRouteZoom(points);
+    const world = points.map(p => routeWorldPx(p.lat, p.lng, z));
+    const minX = Math.min(...world.map(p => p.x)), maxX = Math.max(...world.map(p => p.x));
+    const minY = Math.min(...world.map(p => p.y)), maxY = Math.max(...world.map(p => p.y));
+    // Whole pixels, so every tile lands on an integer offset and no hairline
+    // seams appear between neighbouring tiles.
+    const left = Math.round((minX + maxX) / 2 - W / 2);
+    const top = Math.round((minY + maxY) / 2 - MAP_H / 2);
+
+    let tilesWanted = 0, tilesMissing = 0;
+    if (withTiles) {
+      const n = Math.pow(2, z);
+      const jobs = [];
+      for (let ty = Math.floor(top / TILE); ty <= Math.floor((top + MAP_H - 1) / TILE); ty++) {
+        if (ty < 0 || ty >= n) continue;
+        for (let tx = Math.floor(left / TILE); tx <= Math.floor((left + W - 1) / TILE); tx++) {
+          const wrappedX = ((tx % n) + n) % n;
+          jobs.push(loadRouteTile(z, wrappedX, ty).then(img => ({ img, dx: tx * TILE - left, dy: ty * TILE - top })));
+        }
+      }
+      tilesWanted = jobs.length;
+      (await Promise.all(jobs)).forEach(({ img, dx, dy }) => {
+        if (img) ctx.drawImage(img, dx, dy, TILE, TILE);
+        else tilesMissing++;
+      });
+    }
+
+    // Route: solid white casing under the dashed orange line, so the dashes
+    // stay visible over any map colour, then the red waypoint dots — the
+    // same look as the route on the in-app maps.
+    const pts = world.map(p => ({ x: p.x - left, y: p.y - top }));
+    const tracePath = () => {
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    };
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    if (pts.length > 1) {
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 16;
+      tracePath(); ctx.stroke();
+      ctx.setLineDash([32, 20]);
+      ctx.strokeStyle = "#FFA726";
+      ctx.lineWidth = 9;
+      tracePath(); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    pts.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+      ctx.fillStyle = "#E53935";
+      ctx.fill();
+    });
+
+    // OpenStreetMap's licence requires this credit on anything showing its map.
+    ctx.font = `500 24px ${ROUTE_IMG_FONT}`;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    const credit = "© OpenStreetMap contributors";
+    const creditW = ctx.measureText(credit).width;
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillRect(W - creditW - 28, MAP_H - 44, creditW + 28, 44);
+    ctx.fillStyle = "#333333";
+    ctx.fillText(credit, W - creditW - 14, MAP_H - 22);
+
+    // Say so on the image when the map behind the route is incomplete, so a
+    // blank background isn't mistaken for the route being somewhere empty.
+    let notice = "";
+    if (!withTiles || (tilesWanted > 0 && tilesMissing === tilesWanted)) notice = "Map unavailable — route only";
+    else if (tilesMissing > 0) notice = "Some map tiles didn't load";
+    if (notice) {
+      ctx.font = `600 28px ${ROUTE_IMG_FONT}`;
+      const nW = ctx.measureText(notice).width;
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(24, 24, nW + 32, 56);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillText(notice, 40, 52);
+    }
+
+    // Ride stats strip — same four values as the session map dialog.
+    const infoTop = MAP_H;
+    ctx.fillStyle = "#1B1D21";
+    ctx.fillRect(0, infoTop, W, ROUTE_IMG_INFO_H);
+    ctx.fillStyle = "#2A2D33";
+    ctx.fillRect(0, infoTop, W, 2);
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = "#9AA0AA";
+    ctx.font = `600 34px ${ROUTE_IMG_FONT}`;
+    ctx.fillText(`SkateGuard  ·  Session ${session.index}`, W / 2, infoTop + 66);
+
+    const num = (v, digits) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? x.toFixed(digits) : "--";
+    };
+    const cells = [
+      [num(session.distanceKm, 2),  "Distance (km)",    "#F5F5F7"],
+      [num(session.avgSpeedKmh, 1), "Avg Speed (km/h)", "#F5F5F7"],
+      [num(session.landCount, 0),   "Land",             "#2ECC71"],
+      [num(session.bailCount, 0),   "Bail",             "#E53935"],
+    ];
+    const colW = W / cells.length;
+    cells.forEach(([value, label, color], i) => {
+      const cx = colW * i + colW / 2;
+      ctx.fillStyle = color;
+      ctx.font = `700 66px ${ROUTE_IMG_FONT}`;
+      ctx.fillText(value, cx, infoTop + 172);
+      ctx.fillStyle = "#9AA0AA";
+      ctx.font = `500 26px ${ROUTE_IMG_FONT}`;
+      ctx.fillText(label, cx, infoTop + 224);
+    });
+
+    try {
+      return await canvasToPngBlob(canvas);
+    } catch (e) {
+      // A tile without CORS permission "taints" the canvas and export is
+      // refused outright. Rather than lose the image, redraw without tiles.
+      if (withTiles && e && e.name === "SecurityError") {
+        return renderSessionRouteImage(session, points, false);
+      }
+      throw e;
+    }
+  }
+
+  function saveBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  // Phone's local date and time for filenames, so repeat downloads don't pile
+  // up as "(1)", "(2)" copies of the same name.
+  function downloadStamp() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+
+  // ---------------- debug dialog ----------------
+  const debugDialogBackdrop = document.getElementById("debugDialogBackdrop");
+  const debugTable = document.getElementById("debugTable");
+  const DEBUG_POLL_INTERVAL_MS = 500;
+  let debugPollHandle = null;
+
+  // [label, formatter] — order here is the row order on screen, and
+  // mirrors the board debug page the BLE app opens in its WebView.
+  const DEBUG_ROWS = [
+    ["Stage",               d => d.stage ?? "--"],
+    ["Gyro Y",              d => fmt(d.gyroY, 1) + " deg/s"],
+    ["Accum Rotation",      d => fmt(d.accumDeg, 1) + " deg"],
+    ["Land Confirm Swing",  d => fmt(d.landConfirmSwingDeg, 1) + " deg"],
+    ["Active Window",       d => `${d.activeWindowMs ?? 0} / ${d.activeWindowMaxMs ?? 0} ms`],
+    ["Absolute Window",     d => `${d.absoluteWindowMs ?? 0} / ${d.absoluteWindowMaxMs ?? 0} ms`],
+    ["Cooldown Window",     d => `${d.cooldownWindowMs ?? 0} / ${d.cooldownWindowMaxMs ?? 0} ms`],
+    ["Oscillations",        d => `${d.oscillations ?? 0} / ${d.oscillationsRequired ?? 0}`],
+    ["Loop Max / Avg",      d => `${d.loopMaxMs ?? 0} / ${fmt(d.loopAvgMs, 1)} ms`],
+    ["Land Count",          d => d.kickflipCount ?? 0],
+    ["Bail Count",          d => d.bailCount ?? 0],
+    ["Battery",             d => `${d.batteryPercent ?? 0}%  (${fmt(d.batteryVoltage, 2)} V)`],
+    ["GPS Satellites",      d => `${d.gpsSatellites ?? 0}${(d.gpsSatellites ?? 0) >= 4 ? "" : "  (need 4+)"}`],
+    ["GPS HDOP",            d => (d.gpsHdop > 0 ? fmt(d.gpsHdop, 1) : "--")],
+    ["GPS Fix Age",         d => (d.gpsFixAgeMs != null && d.gpsFixAgeMs >= 0) ? `${(d.gpsFixAgeMs / 1000).toFixed(1)} s` : "no fix yet"],
+    ["GPS Data In",         d => `${d.gpsCharsProcessed ?? 0} chars`],
+    ["GPS Checksum Fails",  d => d.gpsFailedChecksum ?? 0],
+    ["WiFi",                d => `ch ${d.wifiChannel ?? "--"}   ${d.wifiRssi ?? "--"} dBm`],
+    ["ESP-NOW",             d => d.espNowReady ? (d.receiverLinked ? "wearable linked" : "ready, no wearable") : "off"],
+    ["Free Heap",           d => `${Math.round((d.freeHeap ?? 0) / 1024)} KB`],
+    ["Uptime",              d => formatUptime(d.uptimeMs ?? 0)],
+  ];
+
+  function fmt(v, digits) {
+    return (typeof v === "number" && isFinite(v)) ? v.toFixed(digits) : "--";
+  }
+
+  function formatUptime(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return h > 0 ? `${h}h ${m}m ${s}s` : (m > 0 ? `${m}m ${s}s` : `${s}s`);
+  }
+
+  function renderDebug(d) {
+    // Rebuilding only the value cells (not the whole table) keeps text
+    // selection and scroll position stable across the 500ms refresh.
+    if (debugTable.rows.length !== DEBUG_ROWS.length) {
+      debugTable.innerHTML = "";
+      DEBUG_ROWS.forEach(([label]) => {
+        const tr = debugTable.insertRow();
+        tr.insertCell().textContent = label;
+        tr.insertCell().textContent = "--";
+      });
+    }
+    DEBUG_ROWS.forEach(([, format], i) => {
+      let text;
+      try { text = String(format(d)); } catch (e) { text = "--"; }
+      const cell = debugTable.rows[i].cells[1];
+      if (cell.textContent !== text) cell.textContent = text;
+    });
+  }
+
+  async function debugPoll() {
+    try {
+      renderDebug(await apiGet("/api/debug"));
+    } catch (e) {
+      // Board unreachable mid-session — leave the last values on screen
+      // rather than blanking the table; the connection banner already
+      // reports the disconnect.
+    }
+  }
+
+  function openDebugDialog() {
+    debugDialogBackdrop.classList.add("open");
+    debugPoll();
+    if (debugPollHandle === null) {
+      debugPollHandle = setInterval(debugPoll, DEBUG_POLL_INTERVAL_MS);
+    }
+  }
+
+  function closeDebugDialog() {
+    debugDialogBackdrop.classList.remove("open");
+    if (debugPollHandle !== null) {
+      clearInterval(debugPollHandle);
+      debugPollHandle = null;
+    }
+  }
+
+  document.getElementById("sessionsDebugButton").addEventListener("click", openDebugDialog);
+  document.getElementById("debugCloseButton").addEventListener("click", closeDebugDialog);
+
+  // /clear redirects back to "/", which would replace this page with a
+  // fresh load and drop you out of the dialog. Intercept it, clear via
+  // fetch, and stay put.
+  document.getElementById("debugClearLink").addEventListener("click", async (e) => {
+    e.preventDefault();
+    try { await fetch("/clear"); } catch (err) { /* next poll shows the truth */ }
+  });
+
+  // ---------------- session route dialog (a saved session's own route) ----------------
+  const sessionRouteDialogBackdrop = document.getElementById("sessionRouteDialogBackdrop");
+  const sessionRouteStatusText = document.getElementById("sessionRouteStatusText");
+  let sessionRouteMap = null;
+  let sessionRoutePolyline = null;
+  let sessionRouteMarkers = [];
+
+  function clearSessionRouteOverlays() {
+    if (sessionRoutePolyline) { sessionRoutePolyline.remove(); sessionRoutePolyline = null; }
+    sessionRouteMarkers.forEach(m => m.remove());
+    sessionRouteMarkers = [];
+  }
+
+  // Ride info under a saved session's map: a title plus four large values,
+  // instead of the old single 11px line, which was hard to read on a phone.
+  // Built with textContent rather than innerHTML since the values come
+  // straight from the board's CSV.
+  function renderSessionRouteInfo(session) {
+    const box = document.getElementById("sessionRouteInfoText");
+    box.textContent = "";
+
+    const title = document.createElement("div");
+    title.className = "route-info-title";
+    title.textContent = `Session ${session.index}`;
+
+    const num = (v, digits) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(digits) : "--";
+    };
+
+    const grid = document.createElement("div");
+    grid.className = "route-info-grid";
+    [
+      [num(session.distanceKm, 2),  "Distance (km)",    ""],
+      [num(session.avgSpeedKmh, 1), "Avg Speed (km/h)", ""],
+      [num(session.landCount, 0),   "Land",             "land"],
+      [num(session.bailCount, 0),   "Bail",             "bail"],
+    ].forEach(([value, label, tone]) => {
+      const cell = document.createElement("div");
+      cell.className = "route-info-cell";
+      const v = document.createElement("div");
+      v.className = "route-info-value" + (tone ? " " + tone : "");
+      v.textContent = value;
+      const l = document.createElement("div");
+      l.className = "route-info-label";
+      l.textContent = label;
+      cell.append(v, l);
+      grid.appendChild(cell);
+    });
+
+    box.append(title, grid);
+  }
+
+  async function openSessionRouteDialog(session, routeLine) {
+    sessionRouteDialogBackdrop.classList.add("open");
+    renderSessionRouteInfo(session);
+
+    const points = parseRouteLine(routeLine);
+    if (points.length === 0) {
+      sessionRouteStatusText.style.display = "block";
+      sessionRouteStatusText.textContent = "No route recorded for this session";
+      clearSessionRouteOverlays();
+      return;
+    }
+
+    sessionRouteStatusText.style.display = "block";
+    sessionRouteStatusText.textContent = "Loading map…";
+    try {
+      const L = await loadLeaflet();
+      if (!sessionRouteMap) {
+        sessionRouteMap = L.map("sessionRouteMapDiv").setView([points[0].lat, points[0].lng], 17);
+        L.tileLayer(OSM_TILE_URL, { attribution: OSM_ATTRIBUTION, maxZoom: 19 }).addTo(sessionRouteMap);
+      }
+      sessionRouteMap.invalidateSize();
+      clearSessionRouteOverlays();
+
+      if (points.length > 1) {
+        sessionRoutePolyline = dashedRoute(L, points).addTo(sessionRouteMap);
+      }
+      sessionRouteMarkers = points.map(p => dotMarker(L, p, "#E53935", 5).addTo(sessionRouteMap));
+
+      if (points.length > 1) {
+        sessionRouteMap.fitBounds(points.map(p => [p.lat, p.lng]), { padding: [40, 40] });
+      } else {
+        sessionRouteMap.setView([points[0].lat, points[0].lng], 17);
+      }
+      sessionRouteStatusText.style.display = "none";
+    } catch (e) {
+      sessionRouteStatusText.style.display = "block";
+      sessionRouteStatusText.textContent = "Map unavailable on this device";
+    }
+  }
+  document.getElementById("closeSessionMapButton").addEventListener("click", () => sessionRouteDialogBackdrop.classList.remove("open"));
+
+  // Close any dialog by tapping its backdrop, matching standard dialog behavior.
+  [mapDialogBackdrop, sessionsDialogBackdrop, sessionRouteDialogBackdrop].forEach(bd => {
+    bd.addEventListener("click", (e) => { if (e.target === bd) bd.classList.remove("open"); });
+  });
+  // Separate from the loop above: closing this one also has to stop its
+  // poller, or it keeps hitting /api/debug forever behind a hidden dialog.
+  debugDialogBackdrop.addEventListener("click", (e) => {
+    if (e.target === debugDialogBackdrop) closeDebugDialog();
+  });
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkateGuard Dashboard Manual</title>
+<style>
+  :root { --ink:#16181d; --muted:#5d636e; --line:#dcdfe5; }
+  body { margin:0; background:#fff; color:var(--ink);
+         font-family:"Segoe UI",system-ui,-apple-system,sans-serif; line-height:1.6; }
+  main { max-width:820px; margin:0 auto; padding:48px 24px 80px; }
+  h1 { font-size:34px; margin:0 0 6px; letter-spacing:-.5px; }
+  h2 { font-size:23px; margin:44px 0 12px; padding-top:18px; border-top:1px solid var(--line); }
+  .byline { color:var(--muted); font-size:14px; margin:0 0 28px; }
+  p, li { font-size:16px; }
+  img { max-width:100%; height:auto; display:block; margin:18px auto;
+        border:1px solid var(--line); border-radius:10px; background:#0d0d0f; }
+  figure { margin:22px 0; }
+  table { border-collapse:collapse; width:100%; margin:18px 0; font-size:15px; }
+  th, td { border:1px solid var(--line); padding:9px 11px; text-align:left; vertical-align:top; }
+  th { background:#f4f6f8; font-weight:600; }
+  code { background:#f1f3f6; padding:1px 5px; border-radius:4px; font-size:14px; }
+  .note { color:var(--muted); font-size:15px; }
+  ol, ul { padding-left:22px; }
+  @media print { h2 { page-break-after:avoid; } figure, table { page-break-inside:avoid; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>SkateGuard Dashboard Manual</h1>
+<p class="byline">26 September 2026</p>
+
+<h2>Before you start</h2>
+<p>The dashboard is a web page the skateboard itself serves. Your phone only opens it, so nothing is installed and no internet plan is used.</p>
+<p>You need four things:</p>
+<ul>
+  <li>The board switched on, with the SkateGuard program already loaded.</li>
+  <li>Your phone hotspot turned on. Its name and its password are both <code>12345678</code>, which is the network the board looks for.</li>
+  <li>The wearable receiver powered on. It shows the dashboard address, so you can find it without a computer.</li>
+  <li>Open sky, if you want speed, distance and maps. The board reports a GPS fix only with 4 or more satellites.</li>
+  <li>Type the address the wearable shows into your phone browser. That opens the dashboard.</li>
+</ul>
+<figure>
+  <img src="images/10_wearable_screen.png" alt="The wearable screen reading Dashboard: 192.168.43.200 with a countdown in the corner">
+</figure>
+<p>The wearable shows the address like this for 20 seconds after it finds the board. The small number counts down to when the screen goes back to your speed. This is a drawing of the screen, not a photo of your own wearable.</p>
+<p>The map screens also need the phone to have internet, because map images come from OpenStreetMap. Everything else works with the hotspot alone.</p>
+<p class="note">Screenshots here come from a preview fed with sample ride data, so your numbers will differ.</p>
+
+<h2>Opening the dashboard</h2>
+<p>There is no login. The dashboard has no username, password or account, so any phone joined to your hotspot can open it, use the buttons and delete sessions. Your hotspot password is what keeps other people out.</p>
+<ol>
+  <li>Turn on your phone hotspot. The board joins it on its own within a few seconds of power-up.</li>
+  <li>Read the address from the wearable screen. It shows <code>Dashboard: 192.168.x.200</code> for 20 seconds after the link comes up. A computer running Serial Monitor shows the same line.</li>
+  <li>Open that address in the phone browser, for example <code>http://192.168.43.200/</code>. The last part is always <code>.200</code>, so only the first part changes between hotspots.</li>
+  <li>Tap <strong>Open Dashboard</strong>.</li>
+</ol>
+<figure>
+  <img src="images/01_home.png" alt="SkateGuard start screen with the Open Dashboard button">
+</figure>
+<p>To skip typing the address next time, use the browser menu and choose <strong>Add to Home screen</strong>. The dashboard then opens full screen from an icon, like an app. The address stays valid as long as you use the same hotspot.</p>
+
+<h2>The dashboard screen</h2>
+<p>This is the screen you ride with. It refreshes twice a second, so the numbers move as you roll.</p>
+<figure>
+  <img src="images/02_dashboard_idle.png" alt="Dashboard showing Speed, GPS, Wobble, Trick Status, the Land and Bail bar and the session card">
+</figure>
+<table>
+  <tr><th>Part of the screen</th><th>What it tells you</th></tr>
+  <tr><td>Speed (km/h)</td><td>Your GPS speed right now. Anything under 2 km/h reads 0.0, so a parked board does not drift.</td></tr>
+  <tr><td>GPS</td><td>YES once the board has a fix with 4 or more satellites. NO until then, and speed, distance and maps stay empty.</td></tr>
+  <tr><td>Wobble</td><td>YES while the board is detecting the speed wobble pattern.</td></tr>
+  <tr><td>Trick Status</td><td>LAND or BAIL appears for a moment after each trick, then goes back to two dashes.</td></tr>
+  <tr><td>LAND and BAIL bar</td><td>Counts since the board was switched on, with the green and red bar showing the split.</td></tr>
+  <tr><td>Session Recording card</td><td>Distance (km) and Session Speed (km/h) for the session being recorded. Session Speed is your live speed while recording and 0.0 when you are not.</td></tr>
+  <tr><td>Battery icons (top left)</td><td>The first is the board battery, the second the wearable's. The second stays grey until a wearable has been heard.</td></tr>
+  <tr><td>Map icon (top right)</td><td>Opens the live map.</td></tr>
+  <tr><td>Clipboard icon (on the card)</td><td>Opens Recorded Sessions.</td></tr>
+</table>
+<p>Every number here comes from the board itself. Closing the page or locking the phone does not stop the board counting tricks.</p>
+
+<h2>Recording a session</h2>
+<p>A session is one ride you keep. Tricks are counted all the time, but only a recorded session is saved with its distance, speed and route.</p>
+<ol>
+  <li>Tap <strong>Start</strong>. Start fades out and only <strong>Stop</strong> stays bright, so you can tell at a glance that recording is on. The words under the card change to "Recording&hellip;".</li>
+  <li>Ride. Distance and Session Speed climb, and the board saves one route point every 30 seconds.</li>
+  <li>Tap <strong>Stop</strong> when you are done. Nothing is saved yet.</li>
+  <li>Choose <strong>Save</strong> to keep the session, or <strong>Discard</strong> to throw it away.</li>
+</ol>
+<figure>
+  <img src="images/07_dashboard_recording.png" alt="Dashboard while recording, showing 0.16 km and Land 6, Bail 1">
+</figure>
+<p>After Stop, the card asks "Stopped &mdash; save this session or discard it?" and the two buttons swap in. Nothing is written to the board until you choose.</p>
+<figure>
+  <img src="images/08_stopped_save_discard.png" alt="The same card after Stop, showing the Save and Discard buttons">
+</figure>
+<p>Save writes the session's distance, average speed, land count, bail count and route to the board. Discard leaves no trace. Either way the counters keep running for your next session.</p>
+
+<h2>The live map</h2>
+<p>The map icon at the top right opens your position on a map, with the ride numbers in the corner.</p>
+<figure>
+  <img src="images/03_live_map.png" alt="Live map with the overlay reading Speed 12.9 km/h, Distance 0.04 km, Avg speed 5.0 km/h, Land 2 Bail 1">
+</figure>
+<p>The four lines in the corner are your speed right now, the distance and average speed of the session being recorded, and the trick counts. On the map itself, the blue dot is where you are and the red dots are the route points saved during the session, joined by an orange dashed line.</p>
+<p>The map follows you as you ride. Drag or zoom it yourself and following pauses for about 3 seconds, so it does not fight you while you look around. Zoom with the plus and minus buttons at the bottom right, and tap the cross at the top right to close.</p>
+<p>Until the board has a fix, the map shows "Waiting for GPS fix&hellip;" instead. If the map stays blank grey, the phone has no internet for map images, though the board still records the ride.</p>
+<figure>
+  <img src="images/12_live_map_real.jpg" alt="The live map during a real ride, reading Speed 11.7 km/h, Distance 2.40 km, Avg speed 14.9 km/h, Land 0 Bail 0">
+</figure>
+<p>The same screen on a real ride, 2.40 km in. The blue dot is on the road being ridden and the saved points trail behind it.</p>
+
+<h2>Recorded sessions</h2>
+<p>The clipboard icon on the session card opens everything the board has saved.</p>
+<figure>
+  <img src="images/04_sessions.png" alt="Recorded Sessions list with three sessions, each with a download and a delete button">
+</figure>
+<p>Each row reads <code>Session 1: 0.874 km &bull; avg 11.84 km/h &bull; L7/B2</code>, which is the distance, the average speed, then the land and bail counts for that ride.</p>
+<p>Each row has three things you can tap:</p>
+<ul>
+  <li>The row itself opens that session's route on a map.</li>
+  <li>The download arrow saves the session to your phone.</li>
+  <li>The bin deletes that session from the board.</li>
+</ul>
+<p>The bin deletes straight away and asks nothing first, so tap it carefully. A deleted session cannot be brought back.</p>
+<p>The board keeps the last 7 sessions. Saving an eighth deletes the oldest one, so download anything you want to keep. The small bug icon in the top left of this window opens the debug page.</p>
+<p>The download arrow saves that session to your phone: its distance, average speed, trick counts and the positions along the route, ready to open in any spreadsheet. Sessions that have a route also save a picture of the route map. A session recorded without GPS, such as kickflip practice in one spot, saves the numbers only.</p>
+<figure>
+  <img src="images/11_session_route_real.jpg" alt="Downloaded route map of a 2.44 km session, with distance, average speed, land and bail counts along the bottom">
+</figure>
+<p>A map downloaded from the board after a real 2.44 km ride at an average of 14.2 km/h. The picture saves at this size, so it is readable on its own.</p>
+
+<h2>A saved session's route</h2>
+<p>Tapping a row draws where that ride went, with the session's numbers underneath.</p>
+<figure>
+  <img src="images/05_session_route.png" alt="Session 1 route on a map, with Distance 0.87 km, Avg Speed 11.8 km/h, Land 7 and Bail 2 below it">
+</figure>
+<p>The red dots are the saved route points and the orange dashed line joins them in order. Because a point is saved every 30 seconds, the line cuts corners on a fast lap. The strip below the map repeats the session's distance, average speed, lands in green and bails in red.</p>
+<p>A session recorded with no GPS fix has nothing to draw, and shows "No route recorded for this session" instead. That is normal for practice in one spot.</p>
+<p>Tap the cross at the top right to go back to the list.</p>
+
+<h2>The debug page</h2>
+<p>The bug icon inside Recorded Sessions opens the board's own readout, refreshed twice a second. Use it when a trick is not being counted or GPS will not lock.</p>
+<figure>
+  <img src="images/06_debug.png" alt="Debug page listing stage, motion windows, counts, GPS and radio values">
+</figure>
+<table>
+  <tr><th>Row</th><th>What it means</th><th>What is normal</th></tr>
+  <tr><td>Stage</td><td>Where trick detection has got to: IDLE, ROTATING, LAND_CONFIRM or COOLDOWN</td><td>IDLE when the board is still</td></tr>
+  <tr><td>Gyro Y</td><td>How fast the board is turning now, in deg/s</td><td>Near 0 at rest</td></tr>
+  <tr><td>Accum Rotation</td><td>Rotation added up so far in this trick, in degrees</td><td>0 at rest</td></tr>
+  <tr><td>Land Confirm Swing</td><td>Swing measured while confirming a landing, in degrees</td><td>0 at rest</td></tr>
+  <tr><td>Active Window</td><td>Time used of the window a trick has to finish in</td><td>0 / 2000 ms at rest</td></tr>
+  <tr><td>Absolute Window</td><td>Longest a single trick may take</td><td>0 / 4000 ms at rest</td></tr>
+  <tr><td>Cooldown Window</td><td>Pause after a trick before the next is counted</td><td>0 / 500 ms at rest</td></tr>
+  <tr><td>Oscillations</td><td>Wobbles counted against the number needed</td><td>0 / 3 at rest</td></tr>
+  <tr><td>Loop Max / Avg</td><td>Slowest and average time round the board's main loop</td><td>A few ms. A max in the hundreds means the board stalled and can miss tricks</td></tr>
+  <tr><td>Land Count, Bail Count</td><td>The same totals as the front screen</td><td>Matches what you rode</td></tr>
+  <tr><td>Battery</td><td>Board battery percent and voltage</td><td>Roughly 4.2 V full, 3.4 V flat</td></tr>
+  <tr><td>GPS Satellites</td><td>Satellites the module is using</td><td>4 or more. Fewer means no fix</td></tr>
+  <tr><td>GPS HDOP</td><td>How tight the fix is. Lower is better</td><td>Under about 2 outdoors</td></tr>
+  <tr><td>GPS Fix Age</td><td>Time since the last position line arrived</td><td>Under 3 seconds. Older means the position is stale</td></tr>
+  <tr><td>GPS Data In</td><td>Characters read from the GPS module since power-up</td><td>Always climbing. Stuck at 0 means a wiring or baud problem</td></tr>
+  <tr><td>GPS Checksum Fails</td><td>GPS lines that arrived damaged</td><td>0, or a handful</td></tr>
+  <tr><td>WiFi</td><td>Hotspot channel and signal strength</td><td>Stronger than about -70 dBm</td></tr>
+  <tr><td>ESP-NOW</td><td>State of the radio link to the wearable</td><td>"wearable linked"</td></tr>
+  <tr><td>Free Heap</td><td>Memory still free on the board</td><td>Steady, not falling over time</td></tr>
+  <tr><td>Uptime</td><td>Time since the board was switched on</td><td>Resets to 0 after a reboot</td></tr>
+</table>
+<p>The two links at the bottom save the board's detailed motion log to your phone, or clear it. That log is wiped every time the board is switched on anyway.</p>
+
+<h2>If something goes wrong</h2>
+<table>
+  <tr><th>What you see</th><th>What to do</th></tr>
+  <tr><td>The address will not open at all</td><td>Check the hotspot is on and that its name and password are both 12345678. Give the board a few seconds after power-up, then read the address off the wearable again.</td></tr>
+  <tr><td>"Connection lost &mdash; retrying&hellip;"</td><td>The phone and board have lost each other. The page retries on its own. If it does not come back, check the hotspot and reload the page.</td></tr>
+  <tr><td>GPS stays NO</td><td>Go outside with clear sky. A board that has been off for days can take several minutes on the first fix. In the debug page, GPS Satellites should climb towards 4.</td></tr>
+  <tr><td>GPS Data In stuck at 0</td><td>The board is hearing nothing from the GPS module. Check its wiring and that it is powered.</td></tr>
+  <tr><td>Speed reads 0.0 while you are rolling</td><td>Anything under 2 km/h is shown as 0.0 on purpose. If it stays 0.0 at speed, check GPS says YES.</td></tr>
+  <tr><td>The map is blank grey</td><td>The phone has no internet for map images. The ride is still being recorded.</td></tr>
+  <tr><td>The wearable shows NO SIGNAL</td><td>The board is off, out of range, or still starting. The address reappears on the wearable once the link returns.</td></tr>
+  <tr><td>A session is missing</td><td>Only the last 7 are kept, and saving a new one removes the oldest. Tapping Discard after Stop also saves nothing.</td></tr>
+  <tr><td>Land and Bail both show 0</td><td>Normal until the first trick after power-up.</td></tr>
+</table>
+<p>If the numbers look wrong rather than missing, open the debug page first. Loop Max, GPS Fix Age and GPS Satellites explain most odd readings.</p>
+
+<h2>What the board keeps</h2>
+<p>Everything is stored on the board, not on your phone. Open the dashboard from a different phone and the same sessions are there.</p>
+<table>
+  <tr><th>What the board keeps</th><th>Limit</th></tr>
+  <tr><td>Your saved sessions, each with distance, average speed, lands and bails</td><td>The last 7</td></tr>
+  <tr><td>The route of each session</td><td>20 points, one every 30 seconds</td></tr>
+  <tr><td>A detailed motion log, for working out missed tricks</td><td>Cleared every time the board is switched on</td></tr>
+</table>
+<p>There is plenty of room on the board, so you will reach the 7 session limit long before the space runs out.</p>
+<p>A downloaded session opens in any spreadsheet app. It holds the ride's distance, average speed, land and bail counts, and the positions along the route, so you can map the ride yourself.</p>
+<p>Sessions stay on the board when you switch it off. They are erased only if the board is reprogrammed with different memory settings.</p>
+
+</main>
+</body>
+</html>
