@@ -23,6 +23,10 @@ The board joins the rider's phone hotspot, takes a DHCP lease, then moves itself
 | `/log`, `/clear` | Download or clear the motion log |
 | `/manifest.json` | Web app manifest for "Add to Home screen" |
 
+![The dashboard on the phone, waiting to record](images/dashboard_idle.png)
+
+![Recording in progress](images/dashboard_recording.png)
+
 ## Post-ride summary
 
 Stopping a ride does not save it: the card offers Save or Discard, and nothing is written until one is chosen. A saved ride stores distance, average speed, top speed, land count, bail count and wobble-alert count, with its route as a separate line.
@@ -33,5 +37,9 @@ timestamp_ms,avg_speed_kmh,distance_km,land_count,bail_count,top_speed_kmh,wobbl
 ```
 
 `top_speed_kmh` and `wobble_count` are appended after the original columns, so a `sessions.csv` written by earlier firmware still parses — the dashboard reads by position and treats the two new fields as unknown when they are missing.
+
+![Stopped, offering Save or Discard](images/stopped_save_discard.png)
+
+![The session list after saving](images/sessions_after_save.png)
 
 The last 7 rides are kept, with a route point every 30 seconds up to 20 points. Each row downloads as a CSV of the ride plus a rendered PNG of its route, drawn in the browser over OpenStreetMap tiles. Route line N belongs to session N, with a `-` placeholder for rides recorded without GPS.

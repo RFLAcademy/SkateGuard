@@ -2,6 +2,8 @@
 
 Build documentation for SkateGuard, one folder per project phase, matching the six weeks of the plan, plus the finished user manual and the project report.
 
+![How the board, the phone and the wrist fit together](_assets/system_overview.png)
+
 ![SkateGuard dashboard](_assets/dashboard.png)
 
 | Phase | Week | What is in it |

@@ -20,6 +20,8 @@ Detection is a four-stage state machine over the gyro axis a kickflip rotates ar
 | `LAND_CONFIRM` | Watching how the deck settles, within 1000 ms and 83 degrees |
 | `COOLDOWN` | 500 ms quiet period, counter updated |
 
+![The four stages of trick detection](images/trick_detection_states.png)
+
 A trick that reaches `LAND_CONFIRM` and settles inside the limit counts as a **land**. One that keeps swinging past 83 degrees, or runs out of time, counts as a **bail**. Speed wobble is separate: three counted oscillations are needed before it is reported, so one swerve does not trigger an alert.
 
 | Constant | Value | Purpose |
@@ -32,6 +34,10 @@ A trick that reaches `LAND_CONFIRM` and settles inside the limit counts as a **l
 | `WOBBLE_OSCILLATIONS_REQUIRED` | 3 | Oscillations before a wobble is called |
 
 A GPS fix is trusted only when the position is valid, less than 3 seconds old and backed by at least 4 satellites. Speeds under 2 km/h report as zero so a parked board does not drift, and a position step implying more than 20 m/s is rejected as multipath.
+
+The debug page shows the same values live, twice a second, which is what the thresholds were set against.
+
+![The debug page: stage, gyro, windows, counts, GPS and radio](images/debug_page.png)
 
 ## Still open
 

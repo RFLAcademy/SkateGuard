@@ -14,6 +14,8 @@ The board broadcasts telemetry over ESP-NOW, which runs alongside its hotspot co
 
 The packet carries speed, distance, the board's battery, its dashboard address, GPS fix state and a `wobbleActive` flag.
 
+![The wrist unit showing the dashboard address](images/wearable_screen.png)
+
 ## Haptic alert path
 
 | Step | Where |

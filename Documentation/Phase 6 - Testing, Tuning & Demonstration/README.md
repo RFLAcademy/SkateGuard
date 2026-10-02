@@ -15,6 +15,10 @@
 | Dashboard | Exercised in a browser against a simulated board: save and discard, the 7-session cap, deleting sessions, downloads with and without a route | All paths work; the route-alignment fault was reproduced and fixed with a no-GPS session saved between two GPS sessions |
 | Field use | Real rides recorded, then opened as live map and session route maps | Routes render over OpenStreetMap tiles and match the ride |
 
+![A recorded session drawn over OpenStreetMap tiles](images/session_route_real.jpg)
+
+![The live map during a real ride](images/live_map_real.jpg)
+
 Detection accuracy on real rides has not been quantified yet. That is the open item.
 
 ## What remains
