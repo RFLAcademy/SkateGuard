@@ -133,12 +133,13 @@ The files in `Data/` are examples of the format, not a recorded ride.
 │   ├── sessions.csv                 # Session list format
 │   └── routes.csv                   # Route file format, one line per session
 ├── Documentation/
-│   ├── Phase 1 - Trick Detection/
-│   ├── Phase 2 - GPS Speed & Route/
-│   ├── Phase 3 - Wearable Receiver/
-│   ├── Phase 4 - Local Dashboard/
-│   ├── Phase 5 - Sessions & Downloads/
-│   ├── Final Report/                # User manual as PDF, Word and a web page
+│   ├── Phase 1 - Foundation & Design/              # Week 1: layout, parts, CAD
+│   ├── Phase 2 - Hardware & Enclosure/             # Week 2: build, wiring, pins
+│   ├── Phase 3 - Sensor & Embedded System/         # Week 3: detection, GPS
+│   ├── Phase 4 - Wireless Alerts & Bail Detection/ # Week 4: ESP-NOW, haptics
+│   ├── Phase 5 - Companion Dashboard & Data Logging/ # Week 5: dashboard, sessions
+│   ├── Phase 6 - Testing, Tuning & Demonstration/  # Week 6: testing, open items
+│   ├── Final Report/                # Manual and project report: PDF, Word, web page
 │   └── _assets/
 └── README.md
 ```
