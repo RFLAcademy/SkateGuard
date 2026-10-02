@@ -907,6 +907,8 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
       `Speed: ${(t.speedKmh ?? 0).toFixed(1)} km/h\n` +
       `Distance: ${(t.sessionDistanceKm ?? 0).toFixed(2)} km\n` +
       `Avg speed: ${(t.sessionAvgSpeedKmh ?? 0).toFixed(1)} km/h\n` +
+      `Top speed: ${(t.sessionTopSpeedKmh ?? 0).toFixed(1)} km/h\n` +
+      `Wobble alerts: ${t.sessionWobbleCount ?? 0}\n` +
       `Land: ${t.kickflipCount ?? 0}   Bail: ${t.bailCount ?? 0}`;
   }
 
@@ -1099,7 +1101,7 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
     return rows.map((line, i) => {
       const p = line.split(",");
       if (p.length < 3) return null;
-      return { index: i + 1, avgSpeedKmh: p[1] || "0.00", distanceKm: p[2] || "0.000", landCount: p[3] || "0", bailCount: p[4] || "0" };
+      return { index: i + 1, avgSpeedKmh: p[1] || "0.00", distanceKm: p[2] || "0.000", landCount: p[3] || "0", bailCount: p[4] || "0", topSpeedKmh: p[5] || "", wobbleCount: p[6] || "" };
     }).filter(Boolean);
   }
 
@@ -1141,7 +1143,7 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
       const row = document.createElement("div");
       row.className = "session-row";
       row.innerHTML = `
-        <button class="label">Session ${s.index}:  ${s.distanceKm} km   •   avg ${s.avgSpeedKmh} km/h   •   L${s.landCount}/B${s.bailCount}</button>
+        <button class="label">Session ${s.index}:  ${s.distanceKm} km   •   avg ${s.avgSpeedKmh} km/h   •   top ${s.topSpeedKmh || "--"} km/h   •   L${s.landCount}/B${s.bailCount}   •   W${s.wobbleCount || "0"}</button>
         <button class="dl-btn" aria-label="Download session ${s.index}">⬇</button>
         <button class="del-btn" aria-label="Delete session ${s.index}">🗑</button>
       `;
@@ -1205,7 +1207,7 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
   // onlyIndex (1-based, as shown in the list) limits the file to that one
   // session — used by each row's own download button.
   function buildSessionsExportCsv(data, onlyIndex = null) {
-    const header = "session,saved_at_uptime_ms,avg_speed_kmh,distance_km,land_count,bail_count,route_points,route";
+    const header = "session,saved_at_uptime_ms,avg_speed_kmh,distance_km,land_count,bail_count,top_speed_kmh,wobble_count,route_points,route";
     const rawRows = (data?.sessionsCsv || "").trim().split(/\r?\n/).slice(1);
     const routeLines = parseRoutesCsv(data?.routesCsv);
     const rows = [];
@@ -1215,7 +1217,7 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
       if (onlyIndex !== null && i + 1 !== onlyIndex) return;
       const route = routeLines[i] || "";
       rows.push([
-        i + 1, p[0], p[1], p[2], p[3] ?? "0", p[4] ?? "0",
+        i + 1, p[0], p[1], p[2], p[3] ?? "0", p[4] ?? "0", p[5] ?? "", p[6] ?? "",
         parseRouteLine(route).length, route,
       ].map(csvField).join(","));
     });
@@ -1583,8 +1585,10 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
     [
       [num(session.distanceKm, 2),  "Distance (km)",    ""],
       [num(session.avgSpeedKmh, 1), "Avg Speed (km/h)", ""],
+      [num(session.topSpeedKmh, 1), "Top Speed (km/h)", ""],
       [num(session.landCount, 0),   "Land",             "land"],
       [num(session.bailCount, 0),   "Bail",             "bail"],
+      [num(session.wobbleCount, 0), "Wobble Alerts",    ""],
     ].forEach(([value, label, tone]) => {
       const cell = document.createElement("div");
       cell.className = "route-info-cell";
@@ -1681,7 +1685,7 @@ void netPrintln() { Serial.println(); }
 // Battery — read via voltage divider (30k on VCC side, 10k on GND side)
 // into an ADC pin. Same calibration as skateboard_xiao_c3_ble.ino.
 // ---------------------------------------------------------------------
-#define BATTERY_ADC_PIN 4  // GPIO4 (ADC1_CH4) — UNVERIFIED
+#define BATTERY_ADC_PIN 4  // GPIO4 = D2 = ADC1_CH4; batteryInit() logs a raw count at boot
 
 const float BATTERY_DIVIDER_RATIO = 4.165f;
 const float ADC_MAX_COUNTS = 4095.0f;
@@ -1699,6 +1703,15 @@ const uint8_t BATTERY_SAMPLE_COUNT = 10;
 
 void batteryInit() {
   analogReadResolution(12);
+
+  // Pin check. GPIO4 is ADC1_CH4 on the XIAO ESP32-C3. A raw count near 0
+  // or pinned at full scale means the divider is not on this pad, which
+  // otherwise shows up much later as a battery percentage that never moves.
+  int rawAtBoot = analogRead(BATTERY_ADC_PIN);
+  netPrint(F("[BATT] ADC GPIO")); netPrint(BATTERY_ADC_PIN);
+  netPrint(F(" raw=")); netPrint(rawAtBoot);
+  netPrint(F("  pin volts="));
+  netPrintln(rawAtBoot * ADC_REF_VOLTAGE / ADC_MAX_COUNTS, 2);
 }
 
 void batteryUpdate() {
@@ -1729,17 +1742,40 @@ void batteryUpdate() {
 // IMU — BNO055
 // ---------------------------------------------------------------------
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
-#define PIN_SDA 6   // UNVERIFIED
-#define PIN_SCL 7   // UNVERIFIED
+// D4/D5 on the XIAO ESP32-C3, its default I2C pads. The boot-time bus scan
+// in imuInit() confirms the sensor really is on them.
+#define PIN_SDA 6
+#define PIN_SCL 7
 
 const float FILTER_ALPHA = 0.2f;
 float filteredTiltAngleZ = 0.0f;
 
-const GyroAxis WOBBLE_AXIS    = GYRO_Y;  // UNVERIFIED — re-check axis on this mount
-const GyroAxis KICKFLIP_AXIS  = GYRO_Y;  // UNVERIFIED
+// Still to confirm on this mount: ride one kickflip, download stage_log.csv
+// and compare gyro_x, gyro_y and gyro_z through the trick. The axis carrying
+// the rotation is the one these two should name.
+const GyroAxis WOBBLE_AXIS    = GYRO_Y;
+const GyroAxis KICKFLIP_AXIS  = GYRO_Y;
 
 void imuInit() {
   Wire.begin(PIN_SDA, PIN_SCL);
+
+  // Pin check. GPIO6/GPIO7 are the XIAO ESP32-C3's default I2C pads (D4/D5),
+  // but that only matters if the sensor is actually soldered to them. This
+  // scan prints every address that answers, which separates a wiring fault
+  // (nothing found) from a sensor fault (found, but bno.begin() fails).
+  netPrint(F("[I2C] Scanning bus. SDA GPIO")); netPrint(PIN_SDA);
+  netPrint(F(" / SCL GPIO")); netPrintln(PIN_SCL);
+  uint8_t i2cDevicesFound = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      i2cDevicesFound++;
+      netPrint(F("[I2C]   device at 0x")); netPrintln(String(addr, HEX));
+    }
+  }
+  if (i2cDevicesFound == 0) {
+    netPrintln(F("[I2C] No devices answered - check SDA/SCL wiring and sensor power."));
+  }
 
   netPrintln(F("[IMU] Initializing BNO055..."));
   while (!bno.begin()) {
@@ -2259,11 +2295,25 @@ uint16_t sessionKickflipCountStart = 0;
 uint16_t sessionBailCountStart = 0;
 uint16_t sessionFinalKickflipCount = 0;
 uint16_t sessionFinalBailCount = 0;
+// Top speed and wobble alerts for the post-ride summary. Both are tracked
+// only while recording, so they describe the session, not the whole uptime.
+float    sessionTopSpeedKmh = 0.0f;
+float    sessionFinalTopSpeedKmh = 0.0f;
+uint16_t sessionWobbleCount = 0;
+uint16_t sessionFinalWobbleCount = 0;
 
 void sessionUpdate(float speedKmh) {
   if (sessionState != SESSION_RECORDING) return;
   sessionSpeedSum += speedKmh;
   sessionSpeedCount++;
+  if (speedKmh > sessionTopSpeedKmh) sessionTopSpeedKmh = speedKmh;
+}
+
+// Called from the wobble handler. Counting here rather than inside the
+// detector keeps wobbles outside a recording out of that session's row.
+void sessionNoteWobble() {
+  if (sessionState != SESSION_RECORDING) return;
+  if (sessionWobbleCount < 65535) sessionWobbleCount++;
 }
 
 void sessionUpdateRoute() {
@@ -2297,6 +2347,16 @@ float sessionLiveAvgSpeedKmh() {
   return (float)(sessionSpeedSum / sessionSpeedCount);
 }
 
+float sessionLiveTopSpeedKmh() {
+  if (sessionState == SESSION_STOPPED) return sessionFinalTopSpeedKmh;
+  return sessionTopSpeedKmh;
+}
+
+uint16_t sessionLiveWobbleCount() {
+  if (sessionState == SESSION_STOPPED) return sessionFinalWobbleCount;
+  return sessionWobbleCount;
+}
+
 const char* sessionStateName() {
   switch (sessionState) {
     case SESSION_RECORDING: return "recording";
@@ -2309,6 +2369,8 @@ void sessionStart() {
   sessionStartDistanceKm = totalDistanceMeters / 1000.0f;
   sessionSpeedSum = 0.0;
   sessionSpeedCount = 0;
+  sessionTopSpeedKmh = 0.0f;
+  sessionWobbleCount = 0;
   sessionKickflipCountStart = kickflipCount;
   sessionBailCountStart = bailCount;
   sessionRouteCount = 0;
@@ -2325,6 +2387,8 @@ void sessionStop() {
   sessionFinalAvgSpeedKmh = (sessionSpeedCount > 0) ? (float)(sessionSpeedSum / sessionSpeedCount) : 0.0f;
   sessionFinalKickflipCount = kickflipCount - sessionKickflipCountStart;
   sessionFinalBailCount = bailCount - sessionBailCountStart;
+  sessionFinalTopSpeedKmh = sessionTopSpeedKmh;
+  sessionFinalWobbleCount = sessionWobbleCount;
   sessionState = SESSION_STOPPED;
   netPrintln(F("[SESSION] Recording stopped"));
 }
@@ -2408,10 +2472,14 @@ void sessionSave() {
     return;
   }
   if (isNewFile) {
-    f.print("timestamp_ms,avg_speed_kmh,distance_km,land_count,bail_count\n");
+    f.print("timestamp_ms,avg_speed_kmh,distance_km,land_count,bail_count,top_speed_kmh,wobble_count\n");
   }
-  f.printf("%lu,%.2f,%.3f,%u,%u\n", millis(), sessionFinalAvgSpeedKmh, sessionFinalDistanceKm,
-            sessionFinalKickflipCount, sessionFinalBailCount);
+  // Columns appended at the end so a sessions.csv written by older firmware
+  // still parses: the dashboard reads by position and treats the two new
+  // fields as unknown when they are missing.
+  f.printf("%lu,%.2f,%.3f,%u,%u,%.2f,%u\n", millis(), sessionFinalAvgSpeedKmh, sessionFinalDistanceKm,
+            sessionFinalKickflipCount, sessionFinalBailCount,
+            sessionFinalTopSpeedKmh, sessionFinalWobbleCount);
   f.close();
 
   String route = "";
@@ -2487,7 +2555,7 @@ const uint16_t MAX_STAGE_LOG_ROWS = 2000;
 const unsigned long STAGE_LOG_WRITE_INTERVAL_MS = 500;
 
 const char* STAGE_LOG_HEADER =
-  "timestamp_ms,stage,gyro_y,accum_deg,land_confirm_swing_deg,event,kickflip_count,bail_count,active_window_ms,absolute_window_ms,cooldown_window_ms,oscillation_count";
+  "timestamp_ms,stage,gyro_y,accum_deg,land_confirm_swing_deg,event,kickflip_count,bail_count,active_window_ms,absolute_window_ms,cooldown_window_ms,oscillation_count,gyro_x,gyro_z";
 
 void stageLogClearOnBoot() {
   if (LittleFS.exists(STAGE_LOG_CSV_PATH)) {
@@ -2531,11 +2599,16 @@ void skipOldestLines(const char* path, uint16_t skip, bool hasHeader) {
   out.close();
 }
 
+// gyroX and gyroZ are logged beside the axis the detector actually uses.
+// WOBBLE_AXIS and KICKFLIP_AXIS are an assumption about how the IMU sits on
+// this mount; with all three axes in the log, one real kickflip shows which
+// axis carries the rotation instead of leaving it to be guessed.
 void stageLogAppend(unsigned long timestampMs, const char* stageName, float gyroY,
                      float accumDeg, float landConfirmSwingDeg, uint8_t event,
                      uint16_t kfCount, uint16_t blCount,
                      unsigned long activeWindowMs, unsigned long absoluteWindowMs,
-                     unsigned long cooldownWindowMs, uint8_t oscillationCount) {
+                     unsigned long cooldownWindowMs, uint8_t oscillationCount,
+                     float gyroX, float gyroZ) {
   bool isNewFile = !LittleFS.exists(STAGE_LOG_CSV_PATH);
   File f = LittleFS.open(STAGE_LOG_CSV_PATH, FILE_APPEND);
   if (!f) {
@@ -2547,11 +2620,11 @@ void stageLogAppend(unsigned long timestampMs, const char* stageName, float gyro
     f.print("\n");
   }
 
-  char line[192];
-  int n = snprintf(line, sizeof(line), "%lu,%s,%.2f,%.2f,%.2f,%u,%u,%u,%lu,%lu,%lu,%u",
+  char line[224];
+  int n = snprintf(line, sizeof(line), "%lu,%s,%.2f,%.2f,%.2f,%u,%u,%u,%lu,%lu,%lu,%u,%.2f,%.2f",
                     timestampMs, stageName, gyroY, accumDeg, landConfirmSwingDeg, event,
                     kfCount, blCount, activeWindowMs, absoluteWindowMs, cooldownWindowMs,
-                    oscillationCount);
+                    oscillationCount, gyroX, gyroZ);
   f.print(line);
   f.print("\n");
   f.close();
@@ -2944,6 +3017,8 @@ String buildLiveJson() {
   body += "\"sessionState\":\"" + String(sessionStateName()) + "\",";
   body += "\"sessionDistanceKm\":" + String(sessionLiveDistanceKm(distanceKm), 3) + ",";
   body += "\"sessionAvgSpeedKmh\":" + String(sessionLiveAvgSpeedKmh(), 2) + ",";
+  body += "\"sessionTopSpeedKmh\":" + String(sessionLiveTopSpeedKmh(), 2) + ",";
+  body += "\"sessionWobbleCount\":" + String(sessionLiveWobbleCount()) + ",";
   body += "\"updatedAtMs\":" + String(now);
   body += "}";
   return body;
@@ -3182,6 +3257,7 @@ void loop() {
   if (wobbleEventPending) {
     wobbleEventPending = false;
     wobblePendingSend = true;
+    sessionNoteWobble();
     latchedStageEvent = 1; stageEventLatchedAtMs = millis();
     // Clearing the other two latches is the "land and bail crash with each
     // other" fix from skateboard_xiao_c3_ble_stable.ino: each latch runs on
@@ -3277,7 +3353,8 @@ void loop() {
     stageLogAppend(now, motionStateName(), wobbleAxisRate, motionAccumulatedDeg,
                    landConfirmAccumulatedDeg, latchedStageEvent, kickflipCount, bailCount,
                    motionActiveElapsedMs, now - motionWindowStartMs,
-                   now - motionCooldownStartMs, motionOscillationCount);
+                   now - motionCooldownStartMs, motionOscillationCount,
+                   gyroAxisValue(gyroRaw, GYRO_X), gyroAxisValue(gyroRaw, GYRO_Z));
 
     // Reset the loop-period window alongside the log write, so loopMax
     // always means "worst stall since the last logged row" rather than

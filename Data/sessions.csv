@@ -1,4 +1,4 @@
-timestamp_ms,avg_speed_kmh,distance_km,land_count,bail_count
-842113,11.84,0.874,7,2
-1904552,0.00,0.000,14,5
-3120870,13.20,1.215,9,3
+timestamp_ms,avg_speed_kmh,distance_km,land_count,bail_count,top_speed_kmh,wobble_count
+842113,11.84,0.874,7,2,19.60,1
+1904552,0.00,0.000,14,5,0.00,0
+3120870,13.20,1.215,9,3,24.75,3

@@ -105,10 +105,10 @@ A fix also requires 4 or more satellites before speed, distance or maps are used
 Saved sessions are appended to `Data/sessions.csv` on the board:
 
 ```
-timestamp_ms,avg_speed_kmh,distance_km,land_count,bail_count
-842113,11.84,0.874,7,2
-1904552,0.00,0.000,14,5
-3120870,13.20,1.215,9,3
+timestamp_ms,avg_speed_kmh,distance_km,land_count,bail_count,top_speed_kmh,wobble_count
+842113,11.84,0.874,7,2,19.60,1
+1904552,0.00,0.000,14,5,0.00,0
+3120870,13.20,1.215,9,3,24.75,3
 ```
 
 `Data/routes.csv` holds one line per session, as `latitude:longitude` pairs separated by semicolons. A session recorded without GPS writes a single `-`, so line N always belongs to session N:
@@ -152,7 +152,7 @@ The files in `Data/` are examples of the format, not a recorded ride.
 | Phase 3 | ✅ Complete | ESP-NOW wearable receiver with channel hunting |
 | Phase 4 | ✅ Complete | Self-hosted dashboard over the phone hotspot |
 | Phase 5 | ✅ Complete | Session recording, storage and per-session download |
-| Phase 6 | 🔧 In progress | Field testing and trick-detection tuning on real rides |
+| Phase 6 | 🔧 In progress | Field testing, axis confirmation and trick-detection tuning on real rides |
 
 ## ⚠️ Known Limitations / Open Issues
 

@@ -758,6 +758,8 @@
       `Speed: ${(t.speedKmh ?? 0).toFixed(1)} km/h\n` +
       `Distance: ${(t.sessionDistanceKm ?? 0).toFixed(2)} km\n` +
       `Avg speed: ${(t.sessionAvgSpeedKmh ?? 0).toFixed(1)} km/h\n` +
+      `Top speed: ${(t.sessionTopSpeedKmh ?? 0).toFixed(1)} km/h\n` +
+      `Wobble alerts: ${t.sessionWobbleCount ?? 0}\n` +
       `Land: ${t.kickflipCount ?? 0}   Bail: ${t.bailCount ?? 0}`;
   }
 
@@ -950,7 +952,7 @@
     return rows.map((line, i) => {
       const p = line.split(",");
       if (p.length < 3) return null;
-      return { index: i + 1, avgSpeedKmh: p[1] || "0.00", distanceKm: p[2] || "0.000", landCount: p[3] || "0", bailCount: p[4] || "0" };
+      return { index: i + 1, avgSpeedKmh: p[1] || "0.00", distanceKm: p[2] || "0.000", landCount: p[3] || "0", bailCount: p[4] || "0", topSpeedKmh: p[5] || "", wobbleCount: p[6] || "" };
     }).filter(Boolean);
   }
 
@@ -992,7 +994,7 @@
       const row = document.createElement("div");
       row.className = "session-row";
       row.innerHTML = `
-        <button class="label">Session ${s.index}:  ${s.distanceKm} km   •   avg ${s.avgSpeedKmh} km/h   •   L${s.landCount}/B${s.bailCount}</button>
+        <button class="label">Session ${s.index}:  ${s.distanceKm} km   •   avg ${s.avgSpeedKmh} km/h   •   top ${s.topSpeedKmh || "--"} km/h   •   L${s.landCount}/B${s.bailCount}   •   W${s.wobbleCount || "0"}</button>
         <button class="dl-btn" aria-label="Download session ${s.index}">⬇</button>
         <button class="del-btn" aria-label="Delete session ${s.index}">🗑</button>
       `;
@@ -1056,7 +1058,7 @@
   // onlyIndex (1-based, as shown in the list) limits the file to that one
   // session — used by each row's own download button.
   function buildSessionsExportCsv(data, onlyIndex = null) {
-    const header = "session,saved_at_uptime_ms,avg_speed_kmh,distance_km,land_count,bail_count,route_points,route";
+    const header = "session,saved_at_uptime_ms,avg_speed_kmh,distance_km,land_count,bail_count,top_speed_kmh,wobble_count,route_points,route";
     const rawRows = (data?.sessionsCsv || "").trim().split(/\r?\n/).slice(1);
     const routeLines = parseRoutesCsv(data?.routesCsv);
     const rows = [];
@@ -1066,7 +1068,7 @@
       if (onlyIndex !== null && i + 1 !== onlyIndex) return;
       const route = routeLines[i] || "";
       rows.push([
-        i + 1, p[0], p[1], p[2], p[3] ?? "0", p[4] ?? "0",
+        i + 1, p[0], p[1], p[2], p[3] ?? "0", p[4] ?? "0", p[5] ?? "", p[6] ?? "",
         parseRouteLine(route).length, route,
       ].map(csvField).join(","));
     });
@@ -1434,8 +1436,10 @@
     [
       [num(session.distanceKm, 2),  "Distance (km)",    ""],
       [num(session.avgSpeedKmh, 1), "Avg Speed (km/h)", ""],
+      [num(session.topSpeedKmh, 1), "Top Speed (km/h)", ""],
       [num(session.landCount, 0),   "Land",             "land"],
       [num(session.bailCount, 0),   "Bail",             "bail"],
+      [num(session.wobbleCount, 0), "Wobble Alerts",    ""],
     ].forEach(([value, label, tone]) => {
       const cell = document.createElement("div");
       cell.className = "route-info-cell";
