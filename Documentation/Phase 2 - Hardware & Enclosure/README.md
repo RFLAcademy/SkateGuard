@@ -29,15 +29,15 @@ The board sketch uses 91% of the default 1.25 MB program partition and 12% of RA
 
 The CAD from [Phase 1](../Phase%201%20-%20Foundation%20%26%20Design) came out as two printed enclosures. The plate bolts around the truck baseplate with the IMU pod hanging off the deck's edge; the charging module, cell and power switch sit in the upper compartment, the XIAO and the GPS antenna in the lower one.
 
-![The board unit bolted to the deck around the truck baseplate](images/photo_board_on_deck.webp)
+![The board unit bolted to the deck around the truck baseplate](images/photo_board_on_deck.jpg)
 
-![The built plate off the deck: GPS antenna and XIAO, IMU breakout on its pod, charger, cell and switch](images/photo_board_plan.webp)
+![The built plate off the deck: GPS antenna and XIAO, IMU breakout on its pod, charger, cell and switch](images/photo_board_plan.jpg)
 
 The wrist unit stacks an HW-373 V1.2 USB-C charging module (TP4056 class) over the XIAO, with the OLED facing out through the lid.
 
-![The built wrist unit: charging module, XIAO and OLED showing the battery icon](images/photo_wrist_interior.webp)
+![The built wrist unit: charging module, XIAO and OLED showing the battery icon](images/photo_wrist_interior.jpg)
 
-![The wrist case with its 1500 mAh cell, lid and board removed](images/photo_wrist_battery.webp)
+![The wrist case with its 1500 mAh cell, lid and board removed](images/photo_wrist_battery.jpg)
 
 ## Wiring
 
