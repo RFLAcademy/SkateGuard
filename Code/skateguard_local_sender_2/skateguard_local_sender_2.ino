@@ -1,85 +1,3 @@
-/*
-  SkateGuard — LOCAL SENDER (Seeed XIAO ESP32-C3)
-  -----------------------------------------------------------------------
-  Replaces skateguard_firebase_sender.ino — same sensors, same
-  trick-detection FSM (BNO055 fusion, gyro clamp + 5-sample median
-  filter, the wobble/land/bail state machine with the oscillation
-  re-baseline fix), but Firebase is gone entirely:
-
-    OLD (skateguard_firebase_sender.ino): board joins the phone hotspot,
-    pushes data out to Firebase over the internet, phone loads a
-    Firebase-hosted webapp that polls Firebase. Every telemetry update
-    and every button press did a DOUBLE internet round-trip even though
-    phone and board are inches apart on the same hotspot — that's what
-    caused the latency.
-
-    NEW (this file): board still joins the phone's hotspot (for GPS-less
-    testing this also means it has internet if the hotspot provides it,
-    but nothing here actually needs internet). The board now runs its
-    OWN local HTTP server and serves the dashboard page directly — same
-    UI as before (dashboard.html in this folder is the source; embedded
-    below as DASHBOARD_HTML). The phone's browser talks to the board
-    over ONE local hop on the shared hotspot network, no internet, no
-    Firebase, no round-trip through anywhere else.
-
-  WEARABLE (ESP-NOW) — SUPPORTED, but pair it with the matching receiver:
-    skateguard_local_receiver.ino, NOT reciver_skateboard_xiaoc3.ino.
-    The old receiver hardcodes ESPNOW_CHANNEL 11 to match the BLE build's
-    softAP; this board has no softAP and sits on whatever channel the
-    phone hotspot picked, so a hardcoded 11 will simply never hear us.
-    The new receiver channel-hops until it finds us and then locks on.
-    See the ESP-NOW section below for the full reasoning.
-
-  BLE IS STILL DROPPED HERE:
-    The phone talks to this board over plain HTTP on the hotspot instead,
-    so the BLE GATT server would be dead weight (and more radio load on a
-    single 2.4GHz radio already running STA + ESP-NOW). Use
-    skateboard_xiao_c3_ble_stable.ino + SkateGuardBLEApp if you want the
-    native-app/BLE path — that pair is untouched and still works.
-
-  SETUP — fill in the WIFI_NETWORKS table below (one row per phone you
-  want to ride with), then flash. That's it — no Firebase project, no API
-  keys, no webapp to deploy. Adding a second phone doesn't need a
-  reflash if you've already got a spare row filled in.
-
-  FINDING THE DASHBOARD — the board takes a DHCP lease, then re-addresses
-  itself to <that subnet>.200 and prints the result:
-    [WIFI] DHCP lease 192.168.43.7
-    [WIFI] Pinned to 192.168.43.200
-    [WIFI] Dashboard at http://192.168.43.200/
-  So the address always ends in .200 and is stable across reboots, on any
-  hotspot — only the subnet prefix changes if you swap phones. Open that
-  URL from any device on the same hotspot.
-
-  http://skateguard.local/ also works on iOS/macOS/Windows, but NOT in
-  most Android browsers (no mDNS resolver), which is why the numeric
-  address is the one worth bookmarking on a phone.
-
-  If anything about the re-addressing doesn't apply (no gateway offered,
-  a non-/24 subnet, the interface refusing the change) the board just
-  keeps its DHCP lease and prints that instead — it never ends up
-  unreachable, it just might not end in .200. Read the Serial line rather
-  than assuming.
-
-  LOCAL API served by this board (same-origin fetches from the page):
-    GET  /              -> the dashboard page (DASHBOARD_HTML)
-    GET  /api/live       -> JSON telemetry, same shape the dashboard reads
-    GET  /api/command?cmd=start|stop|save|discard|delete|delete:<n>
-                          -> executes immediately, no polling/dedup needed
-                             now that this is a direct request/response
-                             instead of eventually-consistent Firebase writes
-    GET  /api/sessions    -> { sessionsCsv, routesCsv } from local LittleFS
-    GET  /log             -> stage_log.csv download
-    GET  /clear           -> wipes stage_log.csv
-
-  webServer.handleClient() is called unconditionally every loop() cycle,
-  NOT gated on MOTION_IDLE like the Firebase version's uploads were. That
-  gating existed because HTTPS calls block for 100ms-1s+ over the
-  internet; handling an already-open local socket and building a small
-  JSON string from RAM is on the order of microseconds, so it can't
-  distort trick timing the way a stalled HTTPS POST could.
-*/
-
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
@@ -139,13 +57,6 @@ uint8_t wifiNetworkIndex = 0;
 const uint8_t STATIC_HOST_OCTET = 200;
 // ---------------------------------------------------------------------
 
-// ---------------------------------------------------------------------
-// Dashboard page — same UI as the Firebase version, embedded verbatim.
-// Source of truth is dashboard.html in this folder (edit that, then
-// re-paste it here). ESP32 maps flash into the normal address space,
-// so a plain const char[] here already lives in flash without needing
-// PROGMEM (unlike AVR boards).
-// ---------------------------------------------------------------------
 const char DASHBOARD_HTML[] = R"HTMLDOC(
 <!doctype html>
 <html lang="en">
