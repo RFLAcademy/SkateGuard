@@ -1,47 +1,3 @@
-/*
-  SkateGuard — board unit (Seeed XIAO ESP32-C3)
-
-  Reads a BNO055 IMU and a NEO-8M GPS, counts kickflip lands and bails,
-  tracks speed, distance and route, stores sessions on its own flash, and
-  serves the dashboard to the rider's phone over the phone's hotspot. A
-  wrist unit receives speed and battery over ESP-NOW — pair it with
-  skateguard_local_receiver.ino, which hunts for this board's channel.
-
-  SETUP — fill in the WIFI_NETWORKS table below, one row per phone you
-  ride with, then flash. Nothing else to configure.
-
-  FINDING THE DASHBOARD — the board takes a DHCP lease, re-addresses
-  itself to <that subnet>.200 and prints the result:
-    [WIFI] DHCP lease 192.168.43.7
-    [WIFI] Pinned to 192.168.43.200
-    [WIFI] Dashboard at http://192.168.43.200/
-  The address always ends in .200 and survives reboots; only the subnet
-  changes when you swap phones. http://skateguard.local/ also works on
-  iOS, macOS and Windows, but not in most Android browsers, which is why
-  the numeric address is the one worth bookmarking.
-
-  If the re-addressing cannot apply (no gateway offered, a non-/24
-  subnet, the interface refusing the change) the board keeps its DHCP
-  lease and prints that instead. It never ends up unreachable — read the
-  Serial line rather than assuming .200.
-
-  LOCAL API, served by this board:
-    GET  /               -> the dashboard page (DASHBOARD_HTML)
-    GET  /api/live       -> JSON telemetry, the shape the dashboard reads
-    GET  /api/debug      -> motion FSM, GPS, radio and memory values
-    GET  /api/command?cmd=start|stop|save|discard|delete|delete:<n>
-    GET  /api/sessions   -> { sessionsCsv, routesCsv } from LittleFS
-    GET  /log            -> stage_log.csv download
-    GET  /clear          -> wipes stage_log.csv
-
-  dashboard.html in this folder is the source for DASHBOARD_HTML below;
-  paste it between the R"HTMLDOC( markers after editing.
-
-  webServer.handleClient() runs every loop() cycle, ungated: handling an
-  open local socket and building a small JSON string from RAM takes
-  microseconds, so it cannot distort trick timing.
-*/
-
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
@@ -98,11 +54,6 @@ uint8_t wifiNetworkIndex = 0;
 // so .200 is clear in practice. If you ever do collide, change this.
 const uint8_t STATIC_HOST_OCTET = 200;
 
-// Dashboard page, embedded verbatim.
-// Source of truth is dashboard.html in this folder (edit that, then
-// re-paste it here). ESP32 maps flash into the normal address space,
-// so a plain const char[] here already lives in flash without needing
-// PROGMEM (unlike AVR boards).
 const char DASHBOARD_HTML[] = R"HTMLDOC(
 <!doctype html>
 <html lang="en">
