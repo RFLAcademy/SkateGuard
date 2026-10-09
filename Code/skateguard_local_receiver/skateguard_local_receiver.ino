@@ -69,10 +69,8 @@ uint32_t lastShownBoardIp = 0;
 const uint8_t CHANNEL_MIN = 1;
 const uint8_t CHANNEL_MAX = 13;
 
-// Sender broadcasts every 100ms, so ~300ms gives about three chances to
-// hear it per channel before moving on — long enough to be reliable
-// through a little radio contention, short enough that a full 13-channel
-// sweep still finishes in ~4 seconds.
+// Sender broadcasts every 100ms, so 300ms gives about three chances per
+// channel, and a full 13-channel sweep still finishes in about 4s.
 const unsigned long CHANNEL_DWELL_MS = 300;
 
 // Deliberately much longer than LINK_TIMEOUT_MS: the screen should say
@@ -84,10 +82,9 @@ uint8_t currentChannel = CHANNEL_MIN;
 bool channelLocked = false;
 unsigned long lastChannelHopMs = 0;
 
-// onDataRecv() runs in the WiFi task, where Serial writes can block long
-// enough to make the radio miss the packets right behind the one being
-// logged — the exact failure the logging was meant to help diagnose.
-// So the callback only records what to say, and loop() says it.
+// Serial writes inside onDataRecv() block the WiFi task long enough to
+// drop the packets right behind this one, so the callback only records
+// what to say and loop() says it.
 volatile uint8_t pendingChannelLog = 0;
 volatile uint32_t pendingIpLog = 0;
 volatile bool pendingWobbleLog = false;
@@ -282,14 +279,9 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
   if (len != sizeof(TelemetryPacket)) return;
   memcpy(&latest, incomingData, sizeof(latest));
 
-  // Restart the address readout whenever the link is newly up, or the
-  // board reports a different address than last time (you switched
-  // phones, or it re-pinned itself after a reconnect) — those are exactly
-  // the moments the address you had written down went stale.
-  // Deliberately LINK_LOST_MS, not the twitchier LINK_TIMEOUT_MS the
-  // display uses: a one-second gap is a blip, and restarting the address
-  // readout on every blip is what made the screen flip back and forth.
-  // Only a real outage counts as "new link worth re-announcing".
+  // Re-announce the address when the link is newly up or the board reports
+  // a different one. LINK_LOST_MS, not the twitchier LINK_TIMEOUT_MS: a
+  // one-second blip restarting this is what made the screen flip about.
   bool linkWasDown = (millis() - lastPacketMs) > LINK_LOST_MS;
   if (latest.boardIp != 0 && (linkWasDown || latest.boardIp != lastShownBoardIp)) {
     linkEstablishedAtMs = millis();
@@ -299,15 +291,9 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
 
   lastPacketMs = millis();
 
-  // Lock onto the channel the board SAYS it's on, not the one we happened
-  // to hear it on. Adjacent 2.4GHz channels overlap heavily, so hearing a
-  // packet here doesn't mean we're tuned correctly — and a 1-2 channel
-  // error still passes the occasional packet, which presents as a link
-  // that keeps dropping rather than as an obvious tuning fault.
-  //
-  // Retune whenever the stated channel differs from ours, which also
-  // covers the board moving (hotspot restart, different phone) without
-  // waiting for the link-lost timeout to expire first.
+  // Lock onto the channel the board says it is on, not the one we heard it
+  // on. Adjacent channels overlap, and being one or two off still passes the
+  // odd packet, which looks like a flaky link rather than a tuning fault.
   if (latest.boardChannel >= CHANNEL_MIN && latest.boardChannel <= CHANNEL_MAX &&
       latest.boardChannel != currentChannel) {
     currentChannel = latest.boardChannel;
@@ -334,11 +320,9 @@ void espNowInit() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
-  // Disable WiFi modem sleep — otherwise the radio periodically powers
-  // down between wake windows and misses incoming ESP-NOW packets during
-  // that window, causing brief unexplained "NO SIGNAL" gaps. Matters even
-  // more here than before: a nap during a 300ms dwell can make us skip
-  // right past the correct channel while hunting.
+  // Without this the radio naps between wake windows and drops ESP-NOW
+  // packets, which shows up as brief "NO SIGNAL" gaps. A nap during a 300ms
+  // dwell can also skip straight past the right channel while hunting.
   esp_wifi_set_ps(WIFI_PS_NONE);
 
   setRadioChannel(currentChannel);

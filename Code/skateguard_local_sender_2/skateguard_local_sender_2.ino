@@ -11,14 +11,9 @@
 #include <esp_wifi.h>
 #include <LittleFS.h>
 
-// >>> FILL THIS IN BEFORE FLASHING <<<
-//
-// Every hotspot you want this board to work with. It tries them one per
-// retry cycle until something connects, so you can have several phones
-// set up at once and just turn on whichever one you're riding with —
-// no reflashing to switch between them.
-//
-// Leave unused slots as they are; empty entries are skipped.
+// Fill this in before flashing. Every hotspot this board should work with;
+// it tries them one per retry cycle, so several phones can be set up at
+// once. Empty slots are skipped.
 struct WifiCredential {
   const char* ssid;
   const char* password;
@@ -36,22 +31,9 @@ const uint8_t WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NETWORKS[
 // retry so a dead first entry can't block the rest.
 uint8_t wifiNetworkIndex = 0;
 
-// Stable last octet for the dashboard URL. The board takes a normal DHCP
-// lease first, then moves itself to <whatever subnet it landed on>.200 —
-// so the address ends in .200 on EVERY hotspot, not just the one this was
-// written against.
-//
-// Why not just hardcode the whole address: a fixed 10.236.16.200 breaks
-// silently on any other phone. The board still associates fine (that's
-// layer 2, unrelated to IP), still reports WL_CONNECTED, and still prints
-// a confident "Connected, IP 10.236.16.200" — but it's on a subnet nobody
-// else is on, so the dashboard is simply unreachable with no error to
-// explain it. Learning the subnet at runtime removes that failure mode
-// entirely.
-//
-// Pick something above the DHCP pool. Phone hotspots hand out from the
-// low end (.2 upward) and rarely serve more than a handful of clients,
-// so .200 is clear in practice. If you ever do collide, change this.
+// The board takes a DHCP lease, then moves to <that subnet>.200, so the
+// dashboard address always ends in .200. Hardcoding a whole address breaks
+// silently on any other phone. Keep this above the hotspot's DHCP pool.
 const uint8_t STATIC_HOST_OCTET = 200;
 
 const char DASHBOARD_HTML[] = R"HTMLDOC(
@@ -617,13 +599,9 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
 (() => {
   "use strict";
 
-  // ---- Local API — same origin as this page (the board itself), so
-  // these are always relative fetches, one local hop over the shared
-  // hotspot. No host to configure, no internet needed for any of this.
-  // 500ms is a floor set by taste, not by the transport: /api/live builds fresh on every request
-  // from RAM over one local hop, so 250ms also works fine if you want it
-  // snappier. Don't raise it above ~1000ms or trick pulses (latched for
-  // 2000ms board-side) start getting missed between polls.
+  // Local API, same origin as this page, so these are relative fetches over
+  // one local hop. 500ms is taste, not a limit — above ~1000ms trick pulses
+  // (latched 2000ms board-side) start getting missed between polls.
   const POLL_INTERVAL_MS = 500;
   const STALE_AFTER_MS = 4000;   // no updatedAtMs change in this long -> "disconnected"
   const SESSION_ROUTE_SAMPLE_MS = 30000;
@@ -686,16 +664,9 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
 
   // ---------------- compare bar ----------------
   function updateCompareBar(land, bail) {
-    // The app uses Android LinearLayout weights, which ALWAYS normalise —
-    // weight 0.05 vs 0.05 gives a 50/50 split of the full track. CSS
-    // flex-grow doesn't: it only fills the container once the values sum
-    // to >= 1, so copying the app's numbers directly left both bars at
-    // 0.05 (sum 0.1) filling a tenth of the track and the rest empty.
-    // That's the "0 land / 0 bail looks broken until the first trick"
-    // case — at 7 vs 3 the sum is 10 and it happens to look right.
-    //
-    // Normalising to a fixed total reproduces the Android behaviour at
-    // every value, including 0/0.
+    // Android LinearLayout weights always normalise; CSS flex-grow only fills
+    // the container once the values sum to >= 1, so 0.05 vs 0.05 left both bars
+    // at a tenth of the track. A fixed total matches the app at every value.
     const l = Math.max(land, 0.05);
     const b = Math.max(bail, 0.05);
     const total = l + b;
@@ -785,10 +756,8 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
     }
 
     sessionDistanceValue.textContent = (t.sessionDistanceKm ?? 0).toFixed(2);
-    // Live speed, but only while a session is actually recording — 0.0 when
-    // idle or stopped. That makes it this session's speed rather than a
-    // second copy of the always-on Speed tile above. (The map overlay
-    // still shows the session average from sessionAvgSpeedKmh.)
+    // Live speed only while recording, 0.0 when idle or stopped, so it reads as
+    // this session's speed rather than a copy of the Speed tile above.
     sessionSpeedValue.textContent =
       (t.sessionState === "recording" ? (t.speedKmh ?? 0) : 0).toFixed(1);
     sessionActionInFlight = false;
@@ -817,10 +786,8 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
       `Land: ${t.kickflipCount ?? 0}   Bail: ${t.bailCount ?? 0}`;
   }
 
-  // ---------------- polling / connection state ----------------
-  // updatedAtMs is the BOARD's millis(), not wall-clock — track how long
-  // it's been since WE last saw it change; if it hasn't advanced in
-  // STALE_AFTER_MS of our own polling time, treat the link as stale.
+  // updatedAtMs is the board's millis(), not wall-clock: track how long since
+  // we last saw it change, and call the link stale after STALE_AFTER_MS.
   let lastSeenBoardMs = -1;
   let lastSeenChangedAtWall = 0;
 
@@ -907,11 +874,9 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
   let liveLocatorMarker = null;
   let liveWaypointMarkers = [];
   let hasCenteredLiveCamera = false;
-  // Timestamp rather than an "is dragging" boolean, deliberately: a flag
-  // cleared only by dragend stays stuck ON if that event is ever missed
-  // (cancelled touch, lost pointer capture, an exception mid-gesture), and
-  // auto-follow would then be silently dead for the rest of the ride with
-  // no way to get it back. A timestamp always heals itself.
+  // A timestamp, not an "is dragging" flag. A flag cleared only by dragend
+  // stays stuck on if that event is ever missed, killing auto-follow for the
+  // rest of the ride; a timestamp heals itself.
   let lastUserMapInteractionMs = 0;
   const FOLLOW_RESUME_AFTER_MS = 3000;
 
@@ -922,10 +887,8 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
     // where the stats badge sits, and the badge (z-index 1200) covers them.
     liveMap = L.map("routeMapDiv", { zoomControl: false }).setView([0, 0], 17);
     L.control.zoom({ position: "bottomright" }).addTo(liveMap);
-    // Only USER-driven events, never move/moveend — panTo below fires those
-    // itself, so following would suppress itself after its first pan.
-    // drag/dragstart/dragend come solely from Leaflet's Drag handler, and
-    // panTo never changes zoom, so zoomstart here is the rider too.
+    // User-driven events only. panTo below fires move/moveend itself, so
+    // following would suppress itself after its first pan.
     liveMap.on("dragstart drag dragend zoomstart", () => {
       lastUserMapInteractionMs = Date.now();
     });
@@ -955,23 +918,15 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
       } else {
         liveLocatorMarker.setLatLng([liveLocator.lat, liveLocator.lng]);
       }
-      // Mirrors updateLocator() in MainActivity.kt: jump to the first fix
-      // and set the zoom, then FOLLOW every fix after that. The web port
-      // originally implemented only the first half, so the dot kept moving
-      // while the camera stayed frozen where you started — ride a hundred
-      // metres and you're off-screen until you drag the map yourself.
-      //
-      // panTo is the Leaflet equivalent of the app's animateCamera(newLatLng):
-      // animated, and it preserves whatever zoom the rider has chosen
-      // (setView would yank them back to 17 on every single update).
+      // Jump to the first fix and set the zoom, then follow every fix after it.
+      // panTo keeps whatever zoom the rider chose; setView would yank them back
+      // to 17 on every update.
       if (!hasCenteredLiveCamera) {
         liveMap.setView([liveLocator.lat, liveLocator.lng], 17);
         hasCenteredLiveCamera = true;
       } else if (Date.now() - lastUserMapInteractionMs > FOLLOW_RESUME_AFTER_MS) {
-        // Held off while the rider is panning or zooming: at a 500ms poll,
-        // yanking the map back under a moving finger makes it impossible to
-        // look ahead. Following resumes on its own a few seconds after they
-        // stop, so there's no stuck state and no recentre button to hunt for.
+        // Held off while the rider pans or zooms: yanking the map back under a
+        // moving finger makes it impossible to look ahead. Resumes on its own.
         liveMap.panTo([liveLocator.lat, liveLocator.lng]);
       }
     }
@@ -1010,12 +965,9 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
     }).filter(Boolean);
   }
 
-  // Positional: line N of routes.csv belongs to session N. A session saved
-  // without GPS has no route — current firmware writes "-" for that, older
-  // firmware wrote a blank line — and both must stay in the list as real
-  // entries. This used to filter blank lines out, which slid every later
-  // route onto the wrong session. Only the file's single trailing newline
-  // is dropped, and "-" is normalised to "" so it reads as "no route".
+  // Positional: line N belongs to session N. A session saved without GPS
+  // writes "-" (older firmware left it blank) and has to stay in the list —
+  // filtering blanks slid every later route onto the wrong session.
   function parseRoutesCsv(csv) {
     if (!csv) return [];
     const lines = csv.split(/\r?\n/);
@@ -1056,12 +1008,9 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
         sessionsDialogBackdrop.classList.remove("open");
         openSessionRouteDialog(s, routeLines[s.index - 1]);
       });
-      // Just this one session: its CSV row, plus its map image only when it
-      // actually has a route. A session with no route (e.g. practising
-      // kickflips in one spot, where GPS never logs a path) is perfectly
-      // normal, so it simply gets the CSV and no image.
-      // Uses `device` — the data this list was drawn from — so the file
-      // always matches the row that was tapped, even if the list refreshes.
+      // CSV always, map image only when the session has a route. Uses `device`,
+      // the data this list was drawn from, so the file matches the row that was
+      // tapped even if the list refreshes underneath.
       row.querySelector(".dl-btn").addEventListener("click", async (ev) => {
         const dlBtn = ev.currentTarget;
         if (dlBtn.disabled) return;
@@ -1096,14 +1045,9 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
   viewRecordingsButton.addEventListener("click", openSessionsDialog);
   document.getElementById("sessionsCloseButton").addEventListener("click", () => sessionsDialogBackdrop.classList.remove("open"));
 
-  // ---------------- download sessions ----------------
-  // Built in the browser from the same /api/sessions data the list shows and
-  // saved through a local blob link. That keeps this a page-only change — no
-  // new firmware route to add (and keep in sync) in both sender sketches.
-  //
-  // One row per saved session, routes included, so the file stands alone.
-  // saved_at_uptime_ms is the board's millis() when Save was pressed (time
-  // since that boot), not a calendar date — the board has no clock.
+  // Built in the browser from the same /api/sessions data the list shows, so
+  // there's no extra firmware route to keep in sync. saved_at_uptime_ms is the
+  // board's millis() at Save, not a date — the board has no clock.
   function csvField(value) {
     const s = String(value ?? "");
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -1129,16 +1073,9 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
     return header + "\n" + rows.join("\n") + "\n";
   }
 
-  // ---------------- route map images ----------------
-  // One PNG per saved session: the route over a street map, with the ride
-  // stats underneath — something you can open in Gallery or share, unlike
-  // the raw coordinates in the CSV.
-  //
-  // Drawn onto a canvas by hand (tile maths + the tiles themselves) rather
-  // than screenshotting the Leaflet map: that needs no extra library, and it
-  // works straight from the session list without opening that map on screen.
-  // OpenStreetMap's tile server sends CORS headers, so tiles loaded with
-  // crossOrigin="anonymous" can be exported from the canvas.
+  // One PNG per session: the route over a street map with the ride stats
+  // underneath. Drawn on a canvas by hand so no extra library is needed, and
+  // OSM tiles send CORS headers so they can be exported from the canvas.
   const ROUTE_IMG_W = 1080;
   const ROUTE_IMG_MAP_H = 1080;
   const ROUTE_IMG_INFO_H = 300;
@@ -1467,10 +1404,8 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
     sessionRouteMarkers = [];
   }
 
-  // Ride info under a saved session's map: a title plus four large values,
-  // instead of the old single 11px line, which was hard to read on a phone.
-  // Built with textContent rather than innerHTML since the values come
-  // straight from the board's CSV.
+  // Ride info under a saved session's map: a title plus four large values.
+  // textContent rather than innerHTML — the values come straight from the CSV.
   function renderSessionRouteInfo(session) {
     const box = document.getElementById("sessionRouteInfoText");
     box.textContent = "";
@@ -1654,10 +1589,8 @@ const GyroAxis KICKFLIP_AXIS  = GYRO_Y;
 void imuInit() {
   Wire.begin(PIN_SDA, PIN_SCL);
 
-  // Pin check. GPIO6/GPIO7 are the XIAO ESP32-C3's default I2C pads (D4/D5),
-  // but that only matters if the sensor is actually soldered to them. This
-  // scan prints every address that answers, which separates a wiring fault
-  // (nothing found) from a sensor fault (found, but bno.begin() fails).
+  // Pin check: this prints every address that answers, which separates a
+  // wiring fault (nothing found) from a sensor fault (found, begin() fails).
   netPrint(F("[I2C] Scanning bus. SDA GPIO")); netPrint(PIN_SDA);
   netPrint(F(" / SCL GPIO")); netPrintln(PIN_SCL);
   uint8_t i2cDevicesFound = 0;
@@ -1711,10 +1644,9 @@ float gyroAxisValue(const imu::Vector<3>& v, GyroAxis axis) {
   return 0.0f;
 }
 
-// Hard clamp on physically realistic gyro rate. 700 was too aggressive: it
-// saturated constantly and truncated real ~900 deg/s trick peaks into
-// undershoot bails. 1200 sits above observed peaks (~1121 deg/s in bench
-// logs) while still rejecting the absurd.
+// Hard clamp on realistic gyro rate. 700 saturated constantly and truncated
+// real ~900 deg/s peaks into undershoot bails; 1200 sits above observed
+// peaks (~1121 deg/s in bench logs) while still rejecting the absurd.
 const float MAX_REALISTIC_GYRO_DPS = 1200.0f;
 
 float clampGyroRate(float dps) {
@@ -1972,10 +1904,7 @@ const float JITTER_REJECT_THRESHOLD_KMH = 2.0f;
 // Position older than this counts as no fix — see gpsHasFix().
 const unsigned long GPS_FIX_MAX_AGE_MS = 3000;
 
-// Fastest speed a jump between two accepted positions is allowed to imply.
-// 20 m/s = 72 km/h, well above any real skateboard speed, so only glitches
-// exceed it. Used as speed x elapsed time rather than a fixed distance —
-// see gpsUpdateDistance().
+
 const float GPS_MAX_PLAUSIBLE_SPEED_MS = 20.0f;
 
 // GPS diagnostics. These are deliberately passive. The receiver is left at
@@ -1989,10 +1918,9 @@ bool gpsEverHadFix = false;
 
 bool gpsHasFix();
 
-// Process as much pending NMEA data as possible without blocking. This is
-// called at the beginning AND near the end of loop(). That matters because
-// WiFi, filesystem writes, ESP-NOW and the web server can all consume time
-// while the GPS UART keeps receiving bytes in the background.
+// Drain as much NMEA as possible without blocking. Called at the start and
+// again near the end of loop(), because WiFi, flash writes, ESP-NOW and the
+// web server all take time while the GPS keeps filling the UART.
 void gpsProcessSerial() {
   uint16_t processed = 0;
 
@@ -2033,17 +1961,9 @@ float gpsGetSpeedKmh() {
 }
 
 bool gpsHasFix() {
-  // A location alone is not enough. Require a current valid position and at
-  // least four satellites, which avoids treating weak / incomplete 2D data
-  // as a reliable skateboard position.
-  //
-  // The age check covers the case the satellite count can't: TinyGPS++
-  // keeps the last position AND the last satellite count forever once
-  // valid. While sentences keep arriving the count refreshes and drops when
-  // signal is lost, but if the GPS stops sending entirely (loose wire, GPS
-  // brownout) nothing refreshes, and without this the dashboard would show
-  // GPS: YES on frozen data indefinitely. The NEO-8M reports once per
-  // second, so 3s allows a couple of missed sentences before giving up.
+  // Needs a current position and at least four satellites. The age check
+  // covers what the count cannot: if the GPS stops sending entirely, TinyGPS++
+  // keeps the last values forever and the dashboard would show GPS: YES.
   return gps.location.isValid() &&
          gps.location.age() < GPS_FIX_MAX_AGE_MS &&
          gps.satellites.isValid() &&
@@ -2075,18 +1995,9 @@ void gpsUpdateDistance() {
       gpsLastLat, gpsLastLng, lat, lng
     );
 
-    // Reject impossible jumps caused by a bad fix or multipath — but judge
-    // "impossible" against how long it's been since the last accepted
-    // position, not against a fixed distance.
-    //
-    // While there's no usable fix, gpsLastLat/gpsLastLng stay frozen, so the
-    // first fix after a signal gap measures the WHOLE gap as one jump. A
-    // fixed 100m cap threw that away: at 15 km/h you cover 100m in ~24s, so
-    // any gap longer than that (a bridge, tall buildings, dipping below 4
-    // satellites) silently lost the distance actually ridden. Allowing
-    // GPS_MAX_PLAUSIBLE_SPEED_MS x elapsed keeps glitch rejection on a
-    // normal 1s update (still ~20m) while crediting real distance across
-    // gaps. Floored at 1s so update-timing jitter can't shrink the limit.
+    // Reject impossible jumps, but judge "impossible" against elapsed time
+    // rather than a fixed distance: after a signal gap the first fix measures
+    // the whole gap, and a flat 100m cap silently lost real distance ridden.
     float elapsedS = (millis() - gpsLastPositionMs) / 1000.0f;
     if (elapsedS < 1.0f) elapsedS = 1.0f;
     float maxJumpM = GPS_MAX_PLAUSIBLE_SPEED_MS * elapsedS;
@@ -2154,9 +2065,8 @@ void gpsPrintStatus() {
 }
 
 // Session recording — sessions.csv and routes.csv on LittleFS, FIFO capped
-// at MAX_SAVED_SESSIONS. Commands arrive over the local HTTP API, and
-// GET /api/sessions reads the files directly on each request, so the CSV
-// is the only source of truth.
+// at MAX_SAVED_SESSIONS. GET /api/sessions reads the files on each request,
+// so the CSV is the only source of truth.
 #define SESSIONS_CSV_PATH "/sessions.csv"
 #define ROUTES_CSV_PATH   "/routes.csv"
 const uint16_t MAX_SAVED_SESSIONS = 7;
@@ -2299,13 +2209,9 @@ void skipOldestCsvLines(const char* path, uint16_t skip, bool hasHeader) {
   uint16_t rowIndex = 0;
   while (f.available()) {
     String line = f.readStringUntil('\n');
-    // Every line counts, blank ones included. This also runs on routes.csv,
-    // where a blank line is a real entry: a session saved with no route by
-    // firmware older than the "-" placeholder in sessionSave(). Skipping
-    // blanks here dropped that session's slot, so after a trim every later
-    // route was paired with the wrong session. sessions.csv never has blank
-    // rows, so it's unaffected. The file's final newline doesn't yield a
-    // phantom empty line: once it's consumed, available() is false.
+    // Every line counts, blank ones included: on routes.csv a blank line is a
+    // session saved with no route by older firmware. Skipping blanks dropped its
+    // slot and paired every later route with the wrong session.
     rowIndex++;
     if (rowIndex > skip) kept += line + "\n";
   }
@@ -2371,11 +2277,9 @@ void sessionSave() {
     if (i > 0) route += ";";
     route += String(sessionRoute[i].lat, 6) + ":" + String(sessionRoute[i].lng, 6);
   }
-  // A session recorded without any usable GPS fix has no route. Write "-"
-  // instead of leaving the line blank: routes.csv is paired with
-  // sessions.csv purely by line position, and blank lines are exactly what
-  // gets skipped or tidied away (older dashboards filtered them out), which
-  // silently slides every later route onto the wrong session.
+  // No usable fix means no route. Write "-" rather than a blank line:
+  // routes.csv pairs with sessions.csv by line position, and blank lines are
+  // exactly what gets skipped or tidied away.
   if (route.length() == 0) route = "-";
 
   File rf = LittleFS.open(ROUTES_CSV_PATH, FILE_APPEND);
@@ -2479,10 +2383,8 @@ void skipOldestLines(const char* path, uint16_t skip, bool hasHeader) {
   out.close();
 }
 
-// gyroX and gyroZ are logged beside the axis the detector actually uses.
-// WOBBLE_AXIS and KICKFLIP_AXIS are an assumption about how the IMU sits on
-// this mount; with all three axes in the log, one real kickflip shows which
-// axis carries the rotation instead of leaving it to be guessed.
+// gyroX and gyroZ are logged beside the axis the detector uses, so one real
+// kickflip shows which axis actually carries the rotation.
 void stageLogAppend(unsigned long timestampMs, const char* stageName, float gyroY,
                      float accumDeg, float landConfirmSwingDeg, uint8_t event,
                      uint16_t kfCount, uint16_t blCount,
@@ -2526,10 +2428,9 @@ bool wifiConnected = false;
 unsigned long lastWifiAttemptMs = 0;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 15000;
 
-// Starts an attempt against WIFI_NETWORKS[wifiNetworkIndex], skipping
-// blank slots. Non-blocking: WiFi.begin() returns immediately and
-// wifiUpdate() watches for the result, so nothing here can stall loop()
-// and distort trick timing.
+// Starts an attempt against WIFI_NETWORKS[wifiNetworkIndex], skipping blank
+// slots. Non-blocking: wifiUpdate() watches for the result, so nothing here
+// stalls loop() or distorts trick timing.
 void wifiBeginCurrentNetwork() {
   // Find the next non-empty entry, giving up after one full pass so an
   // all-blank table can't spin forever.
@@ -2550,13 +2451,9 @@ void wifiBeginCurrentNetwork() {
 void wifiInit() {
   WiFi.mode(WIFI_STA);
 
-  // Announce a DHCP hostname (DHCP option 12). Android's hotspot runs
-  // dnsmasq, which on many builds resolves the hostnames its own DHCP
-  // clients registered — so http://skateguard/ (no ".local") often just
-  // works on the phone, no IP to remember and no mDNS support needed.
-  // Costs nothing when the phone ignores it; the .200 address below stays
-  // the guaranteed path either way. Must be set after mode(), before
-  // begin().
+  // DHCP option 12. Android's hotspot runs dnsmasq, which often resolves the
+  // hostnames its own clients registered, so http://skateguard/ frequently
+  // just works. Must be set after mode() and before begin().
   WiFi.setHostname("skateguard");
 
   // Deliberately plain DHCP here — see pinStaticIp(), which runs once the
@@ -2565,13 +2462,8 @@ void wifiInit() {
 }
 
 // Moves us to <current subnet>.STATIC_HOST_OCTET so the dashboard URL is
-// predictable, using the gateway and mask the hotspot just told us about.
-// Called after the DHCP lease lands.
-//
-// Every failure path here leaves the working DHCP address in place. An
-// unreachable board is much worse than one whose address ends in an
-// unexpected number — the DHCP lease is always a functioning fallback, so
-// nothing in here is allowed to be fatal.
+// predictable. Every failure path leaves the DHCP address in place — an
+// unreachable board is far worse than an unexpected last octet.
 void pinStaticIp() {
   IPAddress gateway = WiFi.gatewayIP();
   IPAddress subnet  = WiFi.subnetMask();
@@ -2635,17 +2527,14 @@ void wifiUpdate() {
       netPrintln(F("[WIFI] And http://skateguard.local/ on iOS/macOS/Windows"));
     }
 
-    // Modem sleep OFF — a connected STA otherwise powers the radio down
-    // between AP beacon windows, and ESP-NOW packets from the wearable
-    // that arrive during those naps are silently dropped. This is the
-    // single most important line for making ESP-NOW reliable while also
-    // joined to a hotspot. The wrist unit does the same on its side.
+    // Modem sleep off: a connected STA otherwise powers the radio down between
+    // beacons and silently drops ESP-NOW packets from the wearable. This is the
+    // one line that makes ESP-NOW reliable while joined to a hotspot.
     esp_wifi_set_ps(WIFI_PS_NONE);
 
-    // The hotspot dictates our channel — we can't choose it, and ESP-NOW
-    // can only talk to peers on the SAME channel. Print it so the wearable
-    // side is debuggable; the wearable finds this channel by scanning
-    // (see espnow_channel discovery in the receiver sketch).
+    // The hotspot dictates our channel, and ESP-NOW only reaches peers on the
+    // same one. Print it so the wearable side is debuggable; the wearable finds
+    // it by scanning.
     netPrint(F("[ESPNOW] Radio is on hotspot channel "));
     netPrint(WiFi.channel());
     netPrintln(F(" - wearable must hop to this channel"));
@@ -2663,55 +2552,18 @@ void wifiUpdate() {
       wifiNetworkIndex = (wifiNetworkIndex + 1) % WIFI_NETWORK_COUNT;
       WiFi.disconnect();
 
-      // Back to DHCP before every retry. Once pinStaticIp() has applied a
-      // static address it STICKS across reconnects — so without this, a
-      // board that had pinned itself on one hotspot would rejoin a
-      // different hotspot still clinging to the old subnet's address, and
-      // be unreachable exactly as if the address had been hardcoded. All
-      // zeroes re-enables DHCP, so each reconnect re-learns the subnet.
+      // Back to DHCP before every retry. A pinned static address sticks across
+      // reconnects, so a board that pinned itself on one hotspot would rejoin a
+      // different one still on the old subnet. All zeroes re-enables DHCP.
       WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
       wifiBeginCurrentNetwork();
     }
   }
 }
 
-// ESP-NOW — to/from the wearable receiver, running ALONGSIDE the hotspot
-// connection above. This is the part that was previously declared
-// impossible in this variant's header, so here's why it does work:
-//
-//   The old objection was that ESP-NOW needs a fixed, known channel while
-//   a hotspot dictates the channel. Both halves are true; the wrong
-//   conclusion was that the channel has to be known AT COMPILE TIME.
-//   It doesn't — it only has to MATCH at runtime. So:
-//
-//     - This board does NOT call esp_wifi_set_channel(). Doing so would
-//       yank the radio off the hotspot's channel and drop the WiFi link.
-//       The wrist unit may do that, because it joins no AP.
-//     - The broadcast peer is added with channel = 0, which means "use
-//       whatever channel the interface is currently on". So ESP-NOW
-//       automatically follows the hotspot, including if it moves.
-//     - The WEARABLE does the adapting: it channel-hops until it hears
-//       us, then locks on. See skateguard_local_receiver.ino.
-//
-// Three structs of deliberately distinct sizes (22 / 1 / 6 bytes) so
-// neither end can confuse them — the receiver dispatches on length.
-//
-// Two fields earn their place in the packet:
-//
-//   boardIp      — this board's dashboard address, so the wearable's OLED
-//                  can show you where to point a browser instead of
-//                  needing a laptop and Serial Monitor after a phone swap.
-//
-//   boardChannel — the channel this radio is actually on. 2.4GHz channels
-//                  are 20MHz wide but spaced 5MHz apart, so a receiver
-//                  scanning for us hears us on neighbouring channels too
-//                  (a sender on 6 leaks onto 4-8). A receiver that locks
-//                  onto the first channel it hears anything on can easily
-//                  settle 1-2 channels off, where only the occasional
-//                  packet survives — which looks exactly like a flapping
-//                  link, not like a mistuned one. Stating the channel
-//                  explicitly lets the wearable retune to the real one
-//                  instead of guessing from where it happened to hear us.
+// ESP-NOW to the wearable, running alongside the hotspot link. This board
+// never calls esp_wifi_set_channel() (it would drop WiFi); the broadcast peer
+// uses channel 0 to follow the interface, and the wearable hops to find us.
 typedef struct {
   float    tiltAngleZ;
   float    speedKmh;
@@ -2797,18 +2649,14 @@ void espNowSendTelemetry(float tiltAngleZ, float speedKmh, float distanceKm, boo
   esp_now_send(broadcastAddress, (uint8_t*)&telemetry, sizeof(telemetry));
 }
 
-// Local web server — the dashboard page itself (DASHBOARD_HTML, defined
-// further down) plus the JSON API it talks to over same-origin fetch()
-// calls. A command takes effect the instant the request lands, so there is
-// no id-based dedup to get right.
+// Local web server: the dashboard page plus the JSON API it fetches. A
+// command takes effect the instant the request lands, so there is no
+// id-based dedup to get right.
 WebServer webServer(80);
 
-// ---- Debug snapshot — the FSM internals behind GET /api/debug, which
-// backs the dashboard's Debug dialog, which polls this endpoint directly.
-//
-// Snapshotted once per loop() because wobbleAxisRate and friends are
-// local to loop(); a handler firing between cycles has no other way to
-// see them.
+// FSM internals behind GET /api/debug. Snapshotted once per loop() because
+// wobbleAxisRate and friends are local to loop(), and a handler firing
+// between cycles has no other way to see them.
 float liveGyroY = 0.0f;
 float liveAccumDeg = 0.0f;
 float liveLandConfirmSwingDeg = 0.0f;
@@ -2816,12 +2664,9 @@ unsigned long liveActiveWindowMs = 0;
 unsigned long liveAbsoluteWindowMs = 0;
 unsigned long liveCooldownWindowMs = 0;
 
-// Loop-period stats, reset each time they're written to the stage log.
-// motionAccumulatedDeg integrates as a rectangle (one gyro sample x the
-// whole dt), so a stalled loop makes that integration coarse, and the
-// 320-400 deg land window is the narrowest target in the FSM — it
-// degrades first. If loopMax climbs well above the typical period,
-// timing is the problem rather than the detection thresholds.
+// Loop-period stats, reset at each stage-log write. motionAccumulatedDeg
+// integrates as a rectangle, so a stalled loop coarsens it and the 320-400
+// deg land window degrades first — loopMax high means timing, not thresholds.
 unsigned long loopMaxPeriodMs = 0;
 unsigned long loopPeriodSumMs = 0;
 unsigned long loopPeriodCount = 0;
@@ -2834,10 +2679,8 @@ bool dashboardBailLatched = false;
 unsigned long dashboardBailShownAtMs = 0;
 const unsigned long DASHBOARD_EVENT_DISPLAY_MS = 2000;
 
-// Same field shape the dashboard's updateUi() reads. Built fresh on every
-// GET /api/live — cheap: a handful of String concatenations from RAM in
-// response to a request the phone already initiated. No blocking network
-// call, so it needs no MOTION_IDLE gating.
+// Same field shape the dashboard's updateUi() reads, built fresh on every
+// GET /api/live: a few String concatenations from RAM, no blocking call.
 String buildLiveJson() {
   unsigned long now = millis();
   if (dashboardWobbleLatched && now - dashboardWobbleShownAtMs >= DASHBOARD_EVENT_DISPLAY_MS) dashboardWobbleLatched = false;
@@ -2861,10 +2704,9 @@ String buildLiveJson() {
   body += "\"batteryPinV\":" + String(lastPinVoltage, 3) + ",";
   body += "\"batteryVoltage\":" + String(lastBatteryVoltage, 3) + ",";
 
-  // Keep reporting the last known value even once stale, so a momentary radio drop doesn't
-  // collapse the wearable's battery bar to empty. hasReceiver stays false
-  // until a wearable has EVER been heard, which is what greys the
-  // indicator out on a board running solo.
+  // Keep reporting the last known value even once stale, so a momentary radio
+  // drop doesn't empty the wearable's battery bar. hasReceiver stays false
+  // until a wearable has ever been heard, which greys the indicator out.
   bool receiverBatteryFresh = (now - lastReceiverStatusMs) < RECEIVER_STATUS_TIMEOUT_MS;
   bool receiverEverSeen = (lastReceiverStatusMs != 0);
   body += "\"hasReceiver\":" + String(receiverEverSeen ? "true" : "false") + ",";
@@ -2894,15 +2736,9 @@ void handleWebRoot() {
   webServer.send(200, "text/html", DASHBOARD_HTML);
 }
 
-// Web app manifest — this is what turns "Add to Home screen" into a real
-// standalone app icon instead of a browser bookmark: tap it and the
-// dashboard opens full-screen with no URL bar, so after a one-time setup
-// there's no address to type or remember on that phone ever again.
-//
-// The icon is an inline SVG data URI rather than a separate PNG route, so
-// there's no binary blob to embed in flash. Single quotes inside the SVG
-// are deliberate — they keep it legal JSON and legal C++ with no escaping.
-// '#' has to be percent-encoded as %23 inside a data URI.
+// Web app manifest — what turns "Add to Home screen" into a full-screen icon
+// instead of a bookmark. The icon is an inline SVG data URI, so no binary
+// blob sits in flash; single quotes keep it legal JSON and legal C++.
 void handleManifest() {
   String icon = "data:image/svg+xml,"
                 "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'>"
@@ -2954,17 +2790,9 @@ void handleApiDebug() {
   body += "\"batteryPercent\":" + String(batteryPercent) + ",";
   body += "\"batteryVoltage\":" + String(lastBatteryVoltage, 3) + ",";
 
-  // ---- GPS acquisition diagnostics ----
-  // Slow fixes are almost never a code problem, but they're impossible to
-  // tell apart without these. The three cases they separate:
-  //   charsProcessed ~0        -> nothing arriving: wiring/baud/power
-  //   chars OK, satellites 0   -> receiver alive but sees no sky: antenna
-  //                               orientation, indoors, or shielding
-  //   satellites climbing, no  -> it IS working, just still downloading
-  //   fix yet                     orbital data (see the header note on
-  //                               cold starts and the backup battery)
-  // failedChecksum rising alongside good chars points at a noisy or
-  // marginal serial line rather than at the GPS itself.
+  // GPS acquisition diagnostics. charsProcessed ~0 means wiring, baud or
+  // power; plenty of chars with 0 satellites means no sky; satellites climbing
+  // with no fix means it works and is still downloading orbital data.
   body += "\"gpsSatellites\":" + String(gps.satellites.isValid() ? gps.satellites.value() : 0) + ",";
   body += "\"gpsHdop\":" + String(gps.hdop.isValid() ? gps.hdop.hdop() : 0.0, 1) + ",";
   // age() reports ULONG_MAX until the first valid fix; -1 reads as "never"
@@ -3113,10 +2941,9 @@ void loop() {
     wobblePendingSend = true;
     sessionNoteWobble();
     latchedStageEvent = 1; stageEventLatchedAtMs = millis();
-    // Clearing the other two latches is the "land and bail crash with each
-    // other" fix: each latch runs on its own independent 2s window, so without this a land followed
-    // shortly by a bail leaves both flags true and the UI silently shows
-    // only whichever wins its fixed priority order.
+    // Clearing the other two latches is the "land and bail crash" fix: each
+    // latch runs its own 2s window, so a land followed by a bail otherwise
+    // leaves both true and the UI shows only whichever wins on priority.
     dashboardLandLatched = false;
     dashboardBailLatched = false;
     dashboardWobbleLatched = true; dashboardWobbleShownAtMs = millis();
@@ -3191,11 +3018,9 @@ void loop() {
   if (now - lastStageLogWriteMs >= STAGE_LOG_WRITE_INTERVAL_MS) {
     lastStageLogWriteMs = now;
 
-    // Periodic diagnostic line — this file only printed on wobble/land/bail
-    // events, so "nothing's counting" was undebuggable: no way to tell
-    // whether the gyro is reading real values, whether MOTION_TRIGGER_DPS
-    // is ever being crossed, or whether the FSM is stuck somewhere. Printed
-    // unconditionally, so it is visible whatever the network is doing.
+    // Periodic diagnostic line. Printing only on events made "nothing's
+    // counting" undebuggable — no way to see whether the gyro reads real values
+    // or whether MOTION_TRIGGER_DPS is ever crossed.
     netPrint("stage:"); netPrint(motionStateName());
     netPrint("  gyroY:"); netPrint(wobbleAxisRate, 1);
     netPrint("  accumDeg:"); netPrintln(motionAccumulatedDeg, 1);
@@ -3206,18 +3031,16 @@ void loop() {
                    now - motionCooldownStartMs, motionOscillationCount,
                    gyroAxisValue(gyroRaw, GYRO_X), gyroAxisValue(gyroRaw, GYRO_Z));
 
-    // Reset the loop-period window alongside the log write, so loopMax
-    // always means "worst stall since the last logged row" rather than
-    // "worst stall since boot" (which would latch high forever after one
-    // unlucky flash write and stop being useful).
+    // Reset the loop-period window at each log write, so loopMax means "worst
+    // stall since the last row" instead of latching high forever after one
+    // unlucky flash write.
     loopMaxPeriodMs = 0;
     loopPeriodSumMs = 0;
     loopPeriodCount = 0;
   }
 
-  // Handling an already-open local socket and building a small JSON
-  // string from RAM is microseconds, not the 100ms-1s+ an HTTPS call could
-  // take, so it needs no gating on MOTION_IDLE or WiFi status (WebServer is
-  // a no-op when nothing is connected).
+  // Handling an open local socket and building a small JSON string from RAM is
+  // microseconds, not the 100ms-1s+ an HTTPS call could take, so this needs no
+  // gating on MOTION_IDLE or WiFi status.
   webServer.handleClient();
 }
