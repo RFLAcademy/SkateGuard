@@ -1,83 +1,45 @@
 /*
-  SkateGuard — LOCAL SENDER (Seeed XIAO ESP32-C3)
-  -----------------------------------------------------------------------
-  Replaces skateguard_firebase_sender.ino — same sensors, same
-  trick-detection FSM (BNO055 fusion, gyro clamp + 5-sample median
-  filter, the wobble/land/bail state machine with the oscillation
-  re-baseline fix), but Firebase is gone entirely:
+  SkateGuard — board unit (Seeed XIAO ESP32-C3)
 
-    OLD (skateguard_firebase_sender.ino): board joins the phone hotspot,
-    pushes data out to Firebase over the internet, phone loads a
-    Firebase-hosted webapp that polls Firebase. Every telemetry update
-    and every button press did a DOUBLE internet round-trip even though
-    phone and board are inches apart on the same hotspot — that's what
-    caused the latency.
+  Reads a BNO055 IMU and a NEO-8M GPS, counts kickflip lands and bails,
+  tracks speed, distance and route, stores sessions on its own flash, and
+  serves the dashboard to the rider's phone over the phone's hotspot. A
+  wrist unit receives speed and battery over ESP-NOW — pair it with
+  skateguard_local_receiver.ino, which hunts for this board's channel.
 
-    NEW (this file): board still joins the phone's hotspot (for GPS-less
-    testing this also means it has internet if the hotspot provides it,
-    but nothing here actually needs internet). The board now runs its
-    OWN local HTTP server and serves the dashboard page directly — same
-    UI as before (dashboard.html in this folder is the source; embedded
-    below as DASHBOARD_HTML). The phone's browser talks to the board
-    over ONE local hop on the shared hotspot network, no internet, no
-    Firebase, no round-trip through anywhere else.
+  SETUP — fill in the WIFI_NETWORKS table below, one row per phone you
+  ride with, then flash. Nothing else to configure.
 
-  WEARABLE (ESP-NOW) — SUPPORTED, but pair it with the matching receiver:
-    skateguard_local_receiver.ino, NOT reciver_skateboard_xiaoc3.ino.
-    The old receiver hardcodes ESPNOW_CHANNEL 11 to match the BLE build's
-    softAP; this board has no softAP and sits on whatever channel the
-    phone hotspot picked, so a hardcoded 11 will simply never hear us.
-    The new receiver channel-hops until it finds us and then locks on.
-    See the ESP-NOW section below for the full reasoning.
-
-  BLE IS STILL DROPPED HERE:
-    The phone talks to this board over plain HTTP on the hotspot instead,
-    so the BLE GATT server would be dead weight (and more radio load on a
-    single 2.4GHz radio already running STA + ESP-NOW). Use
-    skateboard_xiao_c3_ble_stable.ino + SkateGuardBLEApp if you want the
-    native-app/BLE path — that pair is untouched and still works.
-
-  SETUP — fill in the WIFI_NETWORKS table below (one row per phone you
-  want to ride with), then flash. That's it — no Firebase project, no API
-  keys, no webapp to deploy. Adding a second phone doesn't need a
-  reflash if you've already got a spare row filled in.
-
-  FINDING THE DASHBOARD — the board takes a DHCP lease, then re-addresses
+  FINDING THE DASHBOARD — the board takes a DHCP lease, re-addresses
   itself to <that subnet>.200 and prints the result:
     [WIFI] DHCP lease 192.168.43.7
     [WIFI] Pinned to 192.168.43.200
     [WIFI] Dashboard at http://192.168.43.200/
-  So the address always ends in .200 and is stable across reboots, on any
-  hotspot — only the subnet prefix changes if you swap phones. Open that
-  URL from any device on the same hotspot.
+  The address always ends in .200 and survives reboots; only the subnet
+  changes when you swap phones. http://skateguard.local/ also works on
+  iOS, macOS and Windows, but not in most Android browsers, which is why
+  the numeric address is the one worth bookmarking.
 
-  http://skateguard.local/ also works on iOS/macOS/Windows, but NOT in
-  most Android browsers (no mDNS resolver), which is why the numeric
-  address is the one worth bookmarking on a phone.
+  If the re-addressing cannot apply (no gateway offered, a non-/24
+  subnet, the interface refusing the change) the board keeps its DHCP
+  lease and prints that instead. It never ends up unreachable — read the
+  Serial line rather than assuming .200.
 
-  If anything about the re-addressing doesn't apply (no gateway offered,
-  a non-/24 subnet, the interface refusing the change) the board just
-  keeps its DHCP lease and prints that instead — it never ends up
-  unreachable, it just might not end in .200. Read the Serial line rather
-  than assuming.
-
-  LOCAL API served by this board (same-origin fetches from the page):
-    GET  /              -> the dashboard page (DASHBOARD_HTML)
-    GET  /api/live       -> JSON telemetry, same shape the dashboard reads
+  LOCAL API, served by this board:
+    GET  /               -> the dashboard page (DASHBOARD_HTML)
+    GET  /api/live       -> JSON telemetry, the shape the dashboard reads
+    GET  /api/debug      -> motion FSM, GPS, radio and memory values
     GET  /api/command?cmd=start|stop|save|discard|delete|delete:<n>
-                          -> executes immediately, no polling/dedup needed
-                             now that this is a direct request/response
-                             instead of eventually-consistent Firebase writes
-    GET  /api/sessions    -> { sessionsCsv, routesCsv } from local LittleFS
-    GET  /log             -> stage_log.csv download
-    GET  /clear           -> wipes stage_log.csv
+    GET  /api/sessions   -> { sessionsCsv, routesCsv } from LittleFS
+    GET  /log            -> stage_log.csv download
+    GET  /clear          -> wipes stage_log.csv
 
-  webServer.handleClient() is called unconditionally every loop() cycle,
-  NOT gated on MOTION_IDLE like the Firebase version's uploads were. That
-  gating existed because HTTPS calls block for 100ms-1s+ over the
-  internet; handling an already-open local socket and building a small
-  JSON string from RAM is on the order of microseconds, so it can't
-  distort trick timing the way a stalled HTTPS POST could.
+  dashboard.html in this folder is the source for DASHBOARD_HTML below;
+  paste it between the R"HTMLDOC( markers after editing.
+
+  webServer.handleClient() runs every loop() cycle, ungated: handling an
+  open local socket and building a small JSON string from RAM takes
+  microseconds, so it cannot distort trick timing.
 */
 
 #include <Wire.h>
@@ -93,7 +55,6 @@
 #include <esp_wifi.h>
 #include <LittleFS.h>
 
-// ---------------------------------------------------------------------
 // >>> FILL THIS IN BEFORE FLASHING <<<
 //
 // Every hotspot you want this board to work with. It tries them one per
@@ -102,7 +63,6 @@
 // no reflashing to switch between them.
 //
 // Leave unused slots as they are; empty entries are skipped.
-// ---------------------------------------------------------------------
 struct WifiCredential {
   const char* ssid;
   const char* password;
@@ -137,15 +97,12 @@ uint8_t wifiNetworkIndex = 0;
 // low end (.2 upward) and rarely serve more than a handful of clients,
 // so .200 is clear in practice. If you ever do collide, change this.
 const uint8_t STATIC_HOST_OCTET = 200;
-// ---------------------------------------------------------------------
 
-// ---------------------------------------------------------------------
-// Dashboard page — same UI as the Firebase version, embedded verbatim.
+// Dashboard page, embedded verbatim.
 // Source of truth is dashboard.html in this folder (edit that, then
 // re-paste it here). ESP32 maps flash into the normal address space,
 // so a plain const char[] here already lives in flash without needing
 // PROGMEM (unlike AVR boards).
-// ---------------------------------------------------------------------
 const char DASHBOARD_HTML[] = R"HTMLDOC(
 <!doctype html>
 <html lang="en">
@@ -712,10 +669,7 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
   // ---- Local API — same origin as this page (the board itself), so
   // these are always relative fetches, one local hop over the shared
   // hotspot. No host to configure, no internet needed for any of this.
-  // 500ms matches SkateGuardBLEApp exactly — that's the board's
-  // BLE_NOTIFY_INTERVAL_MS in the BLE build, so the numbers on screen move
-  // at the same rate here as they do in the native app. It's a floor set by
-  // taste, not by the transport: /api/live builds fresh on every request
+  // 500ms is a floor set by taste, not by the transport: /api/live builds fresh on every request
   // from RAM over one local hop, so 250ms also works fine if you want it
   // snappier. Don't raise it above ~1000ms or trick pulses (latched for
   // 2000ms board-side) start getting missed between polls.
@@ -1456,8 +1410,7 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
   const DEBUG_POLL_INTERVAL_MS = 500;
   let debugPollHandle = null;
 
-  // [label, formatter] — order here is the row order on screen, and
-  // mirrors the board debug page the BLE app opens in its WebView.
+  // [label, formatter] — the order here is the row order on screen.
   const DEBUG_ROWS = [
     ["Stage",               d => d.stage ?? "--"],
     ["Gyro Y",              d => fmt(d.gyroY, 1) + " deg/s"],
@@ -1662,15 +1615,11 @@ const char DASHBOARD_HTML[] = R"HTMLDOC(
 </html>
 )HTMLDOC";
 
-// Named axis constants per ADR rule — never hardcode axis indices inline.
+// Named axis constants — never hardcode axis indices inline.
 enum GyroAxis { GYRO_X = 0, GYRO_Y = 1, GYRO_Z = 2 };
 
-// ---------------------------------------------------------------------
-// Serial logging only in this file — no TCP monitor, no BLE, no local
-// web dashboard. Plain Serial.print, kept under the same netPrint/
-// netPrintln names so the IMU/FSM/session code below (copied from
-// skateboard_xiao_c3_ble_stable.ino) needed zero edits at the call sites.
-// ---------------------------------------------------------------------
+// Plain Serial.print under netPrint/netPrintln names, so the IMU, FSM and
+// session code below can log without caring where the output goes.
 template<typename T>
 void netPrint(T v) { Serial.print(v); }
 template<typename T>
@@ -1681,10 +1630,7 @@ template<typename T>
 void netPrintln(T v, int fmt) { Serial.println(v, fmt); }
 void netPrintln() { Serial.println(); }
 
-// ---------------------------------------------------------------------
-// Battery — read via voltage divider (30k on VCC side, 10k on GND side)
-// into an ADC pin. Same calibration as skateboard_xiao_c3_ble.ino.
-// ---------------------------------------------------------------------
+// Battery — voltage divider (30k on the VCC side, 10k on GND) into an ADC pin.
 #define BATTERY_ADC_PIN 4  // GPIO4 = D2 = ADC1_CH4; batteryInit() logs a raw count at boot
 
 const float BATTERY_DIVIDER_RATIO = 4.165f;
@@ -1738,9 +1684,7 @@ void batteryUpdate() {
   batteryPercent = (uint8_t)(roundf(pct / 5.0f) * 5.0f);
 }
 
-// ---------------------------------------------------------------------
 // IMU — BNO055
-// ---------------------------------------------------------------------
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
 // D4/D5 on the XIAO ESP32-C3, its default I2C pads. The boot-time bus scan
 // in imuInit() confirms the sensor really is on them.
@@ -1816,10 +1760,10 @@ float gyroAxisValue(const imu::Vector<3>& v, GyroAxis axis) {
   return 0.0f;
 }
 
-// Hard clamp on physically-realistic gyro rate. See MEMORY.md — 700 was
-// too aggressive (saturated constantly, truncated real ~900 deg/s trick
-// peaks into undershoot bails); 1200 sits above observed real peaks
-// (~1121 deg/s in bench logs) while still rejecting the absurd.
+// Hard clamp on physically realistic gyro rate. 700 was too aggressive: it
+// saturated constantly and truncated real ~900 deg/s trick peaks into
+// undershoot bails. 1200 sits above observed peaks (~1121 deg/s in bench
+// logs) while still rejecting the absurd.
 const float MAX_REALISTIC_GYRO_DPS = 1200.0f;
 
 float clampGyroRate(float dps) {
@@ -1859,11 +1803,8 @@ struct MedianFilter5 {
 
 MedianFilter5 gyroYMedianFilter;
 
-// ---------------------------------------------------------------------
-// UNIFIED MOTION FSM — copied verbatim from skateboard_xiao_c3_ble_stable.ino,
-// including the reversal oscillation re-baseline fix. Do not diverge this
-// from that file without a reason; they should stay in sync.
-// ---------------------------------------------------------------------
+// Unified motion FSM — wobble, land and bail all come from one rotation
+// signal and one set of windows.
 const float         MOTION_TRIGGER_DPS = 150.0f;
 const float         LAND_RANGE1_MIN_DEG = 320.0f;
 const float         LAND_RANGE1_MAX_DEG = 400.0f;
@@ -2067,9 +2008,7 @@ void motionFsmUpdate(float axisDps, float speedKmh) {
   }
 }
 
-// ---------------------------------------------------------------------
 // GPS — NEO-8M
-// ---------------------------------------------------------------------
 #define GPS_RX_PIN 20
 #define GPS_TX_PIN 21
 #define GPS_BAUD   9600
@@ -2263,16 +2202,10 @@ void gpsPrintStatus() {
   netPrintln();
 }
 
-// ---------------------------------------------------------------------
-// Session recording — mirrors skateboard_xiao_c3_ble.ino's local CSV
-// behavior exactly (sessions.csv / routes.csv, FIFO capped at
-// MAX_SAVED_SESSIONS). Commands arrive over the local HTTP API (see
-// handleApiCommand() further down) instead of a BLE characteristic
-// write; the local CSV stays the source of truth either way, and
-// GET /api/sessions reads it directly on each request — no separate
-// mirror/dirty-flag needed now that there's no round-trip to keep in
-// sync with.
-// ---------------------------------------------------------------------
+// Session recording — sessions.csv and routes.csv on LittleFS, FIFO capped
+// at MAX_SAVED_SESSIONS. Commands arrive over the local HTTP API, and
+// GET /api/sessions reads the files directly on each request, so the CSV
+// is the only source of truth.
 #define SESSIONS_CSV_PATH "/sessions.csv"
 #define ROUTES_CSV_PATH   "/routes.csv"
 const uint16_t MAX_SAVED_SESSIONS = 7;
@@ -2544,12 +2477,8 @@ String readRoutesCsv() {
   return content;
 }
 
-// ---------------------------------------------------------------------
-// Local stage log — same LittleFS CSV format as the other SkateGuard
-// sketches, downloadable from the dashboard via GET /log for
-// after-the-fact analysis (same format the webapp-cloud run-log viewer
-// already knows how to parse, if you want that view again later).
-// ---------------------------------------------------------------------
+// Stage log — a CSV on LittleFS, downloadable from the dashboard via
+// GET /log, for tuning detection after the fact.
 #define STAGE_LOG_CSV_PATH "/stage_log.csv"
 const uint16_t MAX_STAGE_LOG_ROWS = 2000;
 const unsigned long STAGE_LOG_WRITE_INTERVAL_MS = 500;
@@ -2640,11 +2569,8 @@ void stageLogAppend(unsigned long timestampMs, const char* stageName, float gyro
   }
 }
 
-// ---------------------------------------------------------------------
-// WiFi — joins the phone's hotspot as a station. No Firebase, no
-// internet dependency; this is purely so the board and phone are on the
-// same local network for the web server below.
-// ---------------------------------------------------------------------
+// WiFi — joins the phone's hotspot as a station, so the board and the
+// phone share a local network for the web server below. No internet needed.
 bool wifiConnected = false;
 unsigned long lastWifiAttemptMs = 0;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 15000;
@@ -2762,8 +2688,7 @@ void wifiUpdate() {
     // between AP beacon windows, and ESP-NOW packets from the wearable
     // that arrive during those naps are silently dropped. This is the
     // single most important line for making ESP-NOW reliable while also
-    // joined to a hotspot (reciver_skateboard_xiaoc3.ino does the same
-    // on its side, for the same reason).
+    // joined to a hotspot. The wrist unit does the same on its side.
     esp_wifi_set_ps(WIFI_PS_NONE);
 
     // The hotspot dictates our channel — we can't choose it, and ESP-NOW
@@ -2799,7 +2724,6 @@ void wifiUpdate() {
   }
 }
 
-// ---------------------------------------------------------------------
 // ESP-NOW — to/from the wearable receiver, running ALONGSIDE the hotspot
 // connection above. This is the part that was previously declared
 // impossible in this variant's header, so here's why it does work:
@@ -2810,9 +2734,8 @@ void wifiUpdate() {
 //   It doesn't — it only has to MATCH at runtime. So:
 //
 //     - This board does NOT call esp_wifi_set_channel(). Doing so would
-//       yank the radio off the hotspot's channel and drop the WiFi link
-//       (that's what reciver_skateboard_xiaoc3.ino does, but it isn't
-//       joined to any AP, so it's free to).
+//       yank the radio off the hotspot's channel and drop the WiFi link.
+//       The wrist unit may do that, because it joins no AP.
 //     - The broadcast peer is added with channel = 0, which means "use
 //       whatever channel the interface is currently on". So ESP-NOW
 //       automatically follows the hotspot, including if it moves.
@@ -2822,9 +2745,7 @@ void wifiUpdate() {
 // Three structs of deliberately distinct sizes (22 / 1 / 6 bytes) so
 // neither end can confuse them — the receiver dispatches on length.
 //
-// Two additions versus skateboard_xiao_c3_ble_stable.ino's layout, which
-// is why the wearable must be skateguard_local_receiver.ino (the older
-// receiver expects the 18-byte layout and would reject these):
+// Two fields earn their place in the packet:
 //
 //   boardIp      — this board's dashboard address, so the wearable's OLED
 //                  can show you where to point a browser instead of
@@ -2840,7 +2761,6 @@ void wifiUpdate() {
 //                  link, not like a mistuned one. Stating the channel
 //                  explicitly lets the wearable retune to the real one
 //                  instead of guessing from where it happened to hear us.
-// ---------------------------------------------------------------------
 typedef struct {
   float    tiltAngleZ;
   float    speedKmh;
@@ -2926,23 +2846,14 @@ void espNowSendTelemetry(float tiltAngleZ, float speedKmh, float distanceKm, boo
   esp_now_send(broadcastAddress, (uint8_t*)&telemetry, sizeof(telemetry));
 }
 
-// ---------------------------------------------------------------------
 // Local web server — the dashboard page itself (DASHBOARD_HTML, defined
 // further down) plus the JSON API it talks to over same-origin fetch()
-// calls. Replaces the Firebase live-telemetry PUT / command polling with
-// direct request/response: a command takes effect the instant the
-// request lands, no id-based dedup needed since there's no
-// eventually-consistent write to race against.
-// ---------------------------------------------------------------------
+// calls. A command takes effect the instant the request lands, so there is
+// no id-based dedup to get right.
 WebServer webServer(80);
 
 // ---- Debug snapshot — the FSM internals behind GET /api/debug, which
-// backs the dashboard's Debug dialog. Same figures the BLE build exposes
-// on its own softAP debug page (handleWebRoot() in
-// skateboard_xiao_c3_ble_stable.ino), which is what SkateGuardBLEApp's
-// debug button loads in a WebView after switching WiFi networks. Here
-// the page is already served by this board, so no network switching is
-// needed — the dialog just polls this endpoint directly.
+// backs the dashboard's Debug dialog, which polls this endpoint directly.
 //
 // Snapshotted once per loop() because wobbleAxisRate and friends are
 // local to loop(); a handler firing between cycles has no other way to
@@ -2973,11 +2884,9 @@ unsigned long dashboardBailShownAtMs = 0;
 const unsigned long DASHBOARD_EVENT_DISPLAY_MS = 2000;
 
 // Same field shape the dashboard's updateUi() reads. Built fresh on every
-// GET /api/live — cheap (a handful of String concatenations from RAM),
-// which is exactly why this doesn't need the MOTION_IDLE gating the old
-// Firebase PUT needed: there's no blocking network call happening here,
-// just building a small string in response to a request the phone
-// already initiated.
+// GET /api/live — cheap: a handful of String concatenations from RAM in
+// response to a request the phone already initiated. No blocking network
+// call, so it needs no MOTION_IDLE gating.
 String buildLiveJson() {
   unsigned long now = millis();
   if (dashboardWobbleLatched && now - dashboardWobbleShownAtMs >= DASHBOARD_EVENT_DISPLAY_MS) dashboardWobbleLatched = false;
@@ -2986,9 +2895,6 @@ String buildLiveJson() {
 
   float distanceKm = totalDistanceMeters / 1000.0f;
   String body = "{";
-  // Field-for-field identical to bleNotifyTelemetry()'s JSON in
-  // skateboard_xiao_c3_ble_stable.ino, so the dashboard reads exactly what
-  // SkateGuardBLEApp's Telemetry.fromJson() reads.
   body += "\"tiltAngleZ\":" + String(imuGetTiltAngleZ(), 2) + ",";
   body += "\"speedKmh\":" + String(gpsGetSpeedKmh(), 2) + ",";
   body += "\"distanceKm\":" + String(distanceKm, 3) + ",";
@@ -3004,8 +2910,7 @@ String buildLiveJson() {
   body += "\"batteryPinV\":" + String(lastPinVoltage, 3) + ",";
   body += "\"batteryVoltage\":" + String(lastBatteryVoltage, 3) + ",";
 
-  // Same staleness handling as the BLE build: keep reporting the last
-  // known value even once stale, so a momentary radio drop doesn't
+  // Keep reporting the last known value even once stale, so a momentary radio drop doesn't
   // collapse the wearable's battery bar to empty. hasReceiver stays false
   // until a wearable has EVER been heard, which is what greys the
   // indicator out on a board running solo.
@@ -3179,15 +3084,13 @@ void webServerInit() {
   netPrintln(F("[WEB] Local server listening on port 80"));
 }
 
-// ---------------------------------------------------------------------
 // Main
-// ---------------------------------------------------------------------
 unsigned long lastStageLogWriteMs = 0;
 bool wobblePendingSend = false;
 bool kickflipPendingSend = false;
 
 unsigned long lastEspNowSendMs = 0;
-const unsigned long ESPNOW_SEND_INTERVAL_MS = 100;  // matches the BLE build's wearable cadence
+const unsigned long ESPNOW_SEND_INTERVAL_MS = 100;  // the wrist unit's display timing is tuned to this
 
 void setup() {
   Serial.begin(115200);
@@ -3260,8 +3163,7 @@ void loop() {
     sessionNoteWobble();
     latchedStageEvent = 1; stageEventLatchedAtMs = millis();
     // Clearing the other two latches is the "land and bail crash with each
-    // other" fix from skateboard_xiao_c3_ble_stable.ino: each latch runs on
-    // its own independent 2s window, so without this a land followed
+    // other" fix: each latch runs on its own independent 2s window, so without this a land followed
     // shortly by a bail leaves both flags true and the UI silently shows
     // only whichever wins its fixed priority order.
     dashboardLandLatched = false;
@@ -3312,9 +3214,8 @@ void loop() {
   sessionUpdate(gpsGetSpeedKmh());
   sessionUpdateRoute();
 
-  // Wearable broadcast — same 100ms cadence as the BLE build, which is
-  // what the watch's display timing was tuned against. wobble/kickflip
-  // ride along as one-shot flags, cleared right after the send so the
+  // Wearable broadcast every 100ms, the cadence the wrist display was
+  // tuned against. Wobble and kickflip ride along as one-shot flags, cleared right after the send so the
   // wearable sees each event exactly once.
   if (now - lastEspNowSendMs >= ESPNOW_SEND_INTERVAL_MS) {
     lastEspNowSendMs = now;
@@ -3342,10 +3243,8 @@ void loop() {
     // Periodic diagnostic line — this file only printed on wobble/land/bail
     // events, so "nothing's counting" was undebuggable: no way to tell
     // whether the gyro is reading real values, whether MOTION_TRIGGER_DPS
-    // is ever being crossed, or whether the FSM is stuck somewhere. This
-    // mirrors the "stage:" line from motion_stage_sender_test.ino, printed
-    // unconditionally (not gated on WiFi/Firebase) so it's visible on
-    // Serial regardless of network state.
+    // is ever being crossed, or whether the FSM is stuck somewhere. Printed
+    // unconditionally, so it is visible whatever the network is doing.
     netPrint("stage:"); netPrint(motionStateName());
     netPrint("  gyroY:"); netPrint(wobbleAxisRate, 1);
     netPrint("  accumDeg:"); netPrintln(motionAccumulatedDeg, 1);
@@ -3366,9 +3265,8 @@ void loop() {
   }
 
   // Handling an already-open local socket and building a small JSON
-  // string from RAM is microseconds, not the 100ms-1s+ an HTTPS call
-  // could take — unlike the old Firebase push/poll, this doesn't need to
-  // be gated on MOTION_IDLE or WiFi status (WebServer itself is a no-op
-  // when nothing's connected).
+  // string from RAM is microseconds, not the 100ms-1s+ an HTTPS call could
+  // take, so it needs no gating on MOTION_IDLE or WiFi status (WebServer is
+  // a no-op when nothing is connected).
   webServer.handleClient();
 }

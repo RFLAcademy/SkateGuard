@@ -1,61 +1,25 @@
 /*
-  SkateGuard — LOCAL RECEIVER (Seeed XIAO ESP32-C3 wearable)
-  -----------------------------------------------------------------------
-  Wearable for skateguard_local_sender.ino (the hotspot + local-dashboard
-  board). Hardware, pin map, OLED layout, motor/LED haptics and battery
-  handling are all carried over unchanged from
-  reciver_skateboard_xiaoc3.ino — that file is proven on this hardware and
-  is left untouched; keep using it with skateboard_xiao_c3_ble_stable.ino.
+  SkateGuard — wearable receiver (Seeed XIAO ESP32-C3)
 
-  THE ONE REAL DIFFERENCE — HOW THE CHANNEL IS FOUND
-  -----------------------------------------------------------------------
-  ESP-NOW only works between radios sitting on the SAME 2.4GHz channel.
+  Wrist unit for skateguard_local_sender_2.ino. Shows live speed, link
+  state, battery and the dashboard address, and buzzes on a speed wobble.
 
-    Old pairing (reciver_skateboard_xiaoc3.ino + the BLE build): the board
-    ran its own softAP pinned to AP_CHANNEL 11, so the wearable could just
-    hardcode ESPNOW_CHANNEL 11 and be right forever.
+  Channel hunting: ESP-NOW only works between radios on the same 2.4GHz
+  channel, and the board's channel is whatever the rider's hotspot picked
+  — unknown at compile time and able to change. The board can't move
+  without dropping the dashboard, so this unit adapts: it hops channels
+  1..13, dwelling CHANNEL_DWELL_MS on each, until telemetry arrives, then
+  locks on. Silence for LINK_LOST_MS starts the hunt again. A full sweep
+  takes about 4s; the OLED shows "SCAN ch N" meanwhile.
 
-    New pairing (this file + skateguard_local_sender.ino): the board joins
-    your PHONE'S HOTSPOT, so its channel is whatever the phone picked —
-    unknown at compile time, different between phones, and able to change
-    when the hotspot restarts. A hardcoded 11 would simply never hear it.
+  The ESP32-C3 is 2.4GHz only. A hotspot set to 5GHz is one the board
+  cannot join in the first place.
 
-  The board can't move (it would drop the hotspot link and kill the web
-  dashboard), so the wearable adapts instead: it hops channels 1..13,
-  dwelling CHANNEL_DWELL_MS on each, until a TelemetryPacket arrives —
-  then it locks onto that channel. If telemetry stops for LINK_LOST_MS
-  (board off, out of range, hotspot moved channels) it resumes hopping
-  automatically. No configuration, no matching constants to keep in sync
-  between the two sketches.
-
-  Worst-case time to find the board is a full sweep, ~4s at the defaults;
-  typically much less. The OLED shows "SCAN ch N" while hunting so you can
-  see it working rather than staring at a dead "NO SIGNAL".
-
-  NOTE: the ESP32-C3 is 2.4GHz-only. If your phone's hotspot is set to
-  5GHz, the SENDER can't join it in the first place — set the hotspot to
-  2.4GHz (or "compatibility mode") and everything downstream works.
-
-  IT ALSO SHOWS YOU THE DASHBOARD ADDRESS
-  -----------------------------------------------------------------------
-  The board's IP changes when you switch phones, and hunting for it
-  otherwise means plugging into a laptop and opening Serial Monitor. So
-  the board sends its address in every telemetry packet (boardIp), and
-  this screen displays it for IP_DISPLAY_MS after the link comes up:
-
-      Dashboard:
-      192.168.43.200                    18s
-
-  Type that into the phone's browser once, "Add to Home screen", done.
-  The readout reappears whenever the address changes or the link is
-  re-established, and yields immediately to live speed if you roll off
-  before the timer expires.
-
-  Pin map — unchanged from reciver_skateboard_xiaoc3.ino:
-    OLED SDA        -> D4 / GPIO6
-    OLED SCL/SCK     -> D5 / GPIO7
+  Pins:
+    OLED SDA         -> D4 / GPIO6
+    OLED SCL         -> D5 / GPIO7
     Vibration motor  -> D1 / GPIO3   (via transistor/MOSFET + flyback diode)
-    Battery ADC      -> D0 / GPIO2   (resistor divider, R1=30k / R2=10k)
+    Battery ADC      -> D0 / GPIO2   (divider R1 = 30k / R2 = 10k)
     LED              -> D8 / GPIO8
 */
 
@@ -65,9 +29,7 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 
-// ---------------------------------------------------------------------
 // Pin map
-// ---------------------------------------------------------------------
 #define OLED_SDA 6
 #define OLED_SCL 7
 #define LED_PIN 8
@@ -77,11 +39,9 @@
 // 0.91" 128x32 OLED — different constructor/geometry than a 128x64 panel.
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
-// ---------------------------------------------------------------------
-// Telemetry received from the board — byte-identical to the sender's
-// TelemetryPacket. Do not reorder or resize: the length check in
-// onDataRecv() is what separates this from the sender's other broadcasts.
-// ---------------------------------------------------------------------
+// Byte-identical to the sender's TelemetryPacket. Do not reorder or
+// resize: the length check in onDataRecv() is what tells this apart from
+// the sender's other broadcasts.
 typedef struct {
   float    tiltAngleZ;      // degrees, fused BNO055 Euler Z — DISPLAY ONLY
   float    speedKmh;
@@ -98,24 +58,14 @@ TelemetryPacket latest = {0.0f, 0.0f, 0.0f, 0, false, false, false, 0, 0};
 volatile unsigned long lastPacketMs = 0;
 const unsigned long LINK_TIMEOUT_MS = 1000;   // no packet this long -> "NO SIGNAL" on screen
 
-// ---------------------------------------------------------------------
-// Dashboard address readout — the whole point of carrying boardIp over
-// the air. After switching phones the board's address changes, and
-// without this the only way to learn the new one is a laptop running
-// Serial Monitor. Instead the wearable just shows it for a while after
-// the link comes up, which is exactly when you're about to open it.
-//
-// It replaces the normal readout only briefly, and only while stopped —
-// riding speed matters more than a URL you've already typed.
-// ---------------------------------------------------------------------
+// Dashboard address readout. The board's address changes with the phone,
+// and without this the only way to learn the new one is Serial Monitor.
+// Shown briefly after the link comes up, and only while stopped.
 const unsigned long IP_DISPLAY_MS = 20000;
 unsigned long linkEstablishedAtMs = 0;
 uint32_t lastShownBoardIp = 0;
 
-// ---------------------------------------------------------------------
-// Channel discovery — see the header. This replaces the old fixed
-// ESPNOW_CHANNEL constant entirely.
-// ---------------------------------------------------------------------
+// Channel discovery
 const uint8_t CHANNEL_MIN = 1;
 const uint8_t CHANNEL_MAX = 13;
 
@@ -170,9 +120,7 @@ void setRadioChannel(uint8_t channel) {
   esp_wifi_set_promiscuous(false);
 }
 
-// ---------------------------------------------------------------------
 // Battery — resistor-divider into an ADC1 pin
-// ---------------------------------------------------------------------
 const float BATTERY_DIVIDER_R1 = 30000.0f;  // ohms, Vbat side
 const float BATTERY_DIVIDER_R2 = 10000.0f;  // ohms, GND side
 
@@ -225,11 +173,9 @@ void batteryUpdate() {
   Serial.print(F("  pct:")); Serial.println(batteryPercent);
 }
 
-// ---------------------------------------------------------------------
 // Reverse channel: broadcast our own battery status to the board, which
 // surfaces it in the web dashboard's second battery bar (the
 // receiverBatteryPercent / receiverBatteryFresh fields in /api/live).
-// ---------------------------------------------------------------------
 typedef struct {
   uint8_t batteryPercent;
 } ReceiverStatusPacket;
@@ -247,9 +193,7 @@ void onStatusSendResult(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "ACKED" : "NO ACK / FAILED");
 }
 
-// ---------------------------------------------------------------------
 // Display
-// ---------------------------------------------------------------------
 void drawBatteryIcon(int x, int y, uint8_t percent, int w = 24, int h = 12) {
   int nubW = max(2, w / 9);   // terminal nub scales roughly with body size
   int nubH = h / 3;
@@ -271,9 +215,7 @@ unsigned long wobbleFlagShownAtMs = 0;
 const unsigned long WOBBLE_FLAG_DISPLAY_MS = 500;
 bool wobbleFlagLatched = false;
 
-// ---------------------------------------------------------------------
 // LED + vibration motor "haptic" feedback — non-blocking blink on wobble
-// ---------------------------------------------------------------------
 const unsigned long LED_BLINK_ON_MS  = 100;
 const unsigned long LED_BLINK_OFF_MS = 100;
 const uint8_t       LED_BLINK_COUNT  = 3;
@@ -333,9 +275,7 @@ void ledUpdate() {
   }
 }
 
-// ---------------------------------------------------------------------
 // ESP-NOW
-// ---------------------------------------------------------------------
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
   // The sender also broadcasts a 6-byte StagePacket; the size check is
   // what keeps us from parsing it as telemetry.
@@ -492,10 +432,8 @@ void renderDisplay() {
     display.drawStr(0, 8, "SkateGuard");
 
     if (latest.speedKmh < 3.0f) {
-      // Same position/footprint the speed text occupies below (fub14_tf,
-      // baseline y=30 -> top ~y=16, spanning roughly x=34-78 across both
-      // the single- and double-digit cases) so the battery icon reads as
-      // occupying that same slot rather than a small badge off to the side.
+      // Same slot the speed text occupies, so the icon reads as replacing
+      // it rather than as a small badge off to the side.
       drawBatteryIcon(34, 16, batteryPercent, 44, 14);
     } else {
       display.setFont(u8g2_font_fub14_tf);
@@ -538,9 +476,8 @@ void loop() {
   channelHuntUpdate();
   renderDisplay();
 
-  // Keep re-blinking every 1 second for as long as wobbling continues —
-  // stops on its own once no new wobble packet has arrived for
-  // WOBBLE_ACTIVE_WINDOW_MS. Matches the sender's periodic LED behavior.
+  // Keep re-blinking every second while wobbling continues; stops on its
+  // own once no new wobble packet has arrived for WOBBLE_ACTIVE_WINDOW_MS.
   unsigned long now = millis();
   if (now - wobbleLastEventMs < WOBBLE_ACTIVE_WINDOW_MS &&
       now - ledLastPeriodicMs >= LED_PERIODIC_INTERVAL_MS) {
@@ -561,8 +498,7 @@ void loop() {
     Serial.print(F("  result:")); Serial.println(sendResult == ESP_OK ? "OK" : "FAIL");
   }
 
-  // Shorter than the old 100ms: during a hunt this is also the resolution
-  // of the dwell timer, and renderDisplay() needs to keep up with the
-  // "SCAN ch N" readout changing every CHANNEL_DWELL_MS.
+  // During a hunt this is also the dwell timer's resolution, and the
+  // "SCAN ch N" readout changes every CHANNEL_DWELL_MS.
   delay(50);
 }
